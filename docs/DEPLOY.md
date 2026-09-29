@@ -551,7 +551,11 @@ it on because 953 MB holds two sessions at 213 MiB and one at 358.
 
 A live session was also measured the other way round, as the container's peak with
 a page in it: **231 MiB** on a 953 MB `e2-micro`, which is 2-3 devices and not the
-16 the default allows. Lower `BFWP_MAX_SESSIONS` to match the host rather than the
+16 the default allows. With `BFWP_CHROMIUM_LOW_MEMORY=1` on the same box the
+container read **113 MiB** while `bin/bfwp-smoke.js` held its session and passed
+10/10 -- an instantaneous reading rather than a peak, taken to check that the flag
+was in force and that nothing the protocol needs stopped working. It is the smoke
+test, not this paragraph, that says the flag is safe. Lower `BFWP_MAX_SESSIONS` to match the host rather than the
 aspiration -- a server that accepts a session it cannot hold fails at the browser
 launch, which the phone sees as a page that never arrives.
 
