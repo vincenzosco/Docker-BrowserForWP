@@ -36,7 +36,16 @@ services:
     volumes:
       - ./tls:/etc/bfwp/tls:ro
       - devices:/var/lib/bfwp
-      - audio:/run/bfwp
+      # An `audio:/run/bfwp` volume sat here, and Compose refused the ENTIRE file
+      # for it: "target /run/bfwp already mounted as services.render.tmpfs[1]".
+      # A named volume and a tmpfs cannot share a target, and the tmpfs is the one
+      # that is load-bearing -- `read_only: true` means the FIFO has nowhere else
+      # to live, and a 64 MB cap on a file ffmpeg appends to is a cap worth having.
+      # Nothing is lost by dropping the volume: the writer (ffmpeg, step 4 of
+      # docs/DEPLOY.md) and the reader (`fs.createReadStream` in src/audio.js)
+      # both run INSIDE this container, so a named volume would only persist a
+      # growing mp3 across restarts. Found on Compose v5.5.1, the first run that
+      # ever built this image.
     # The process draws pages for strangers. It should hold nothing it does not
     # need, and it should not be able to write to its own code.
     read_only: true
@@ -60,4 +69,3 @@ services:
 
 volumes:
   devices:
-  audio:
