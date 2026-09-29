@@ -9,20 +9,12 @@
 - **A domain and a certificate from a real CA.** The phone validates the chain
   and the host name before it sends a byte, so a self-signed certificate is not a
   shortcut to test with -- it is a wall. `certbot certonly --standalone -d
-  render.example.com`, then copy `fullchain.pem` and `privkey.pem` into `tls/`,
-  **and make them readable by the container's user**:
-
-  ```bash
-  sudo chown 1000:1000 tls/fullchain.pem tls/privkey.pem
-  sudo chmod 600 tls/privkey.pem
-  sudo chmod 644 tls/fullchain.pem
-  ```
-
-  The container runs as `pwuser`, uid 1000, and a bind mount keeps the HOST's
-  numeric owner: certbot writes the key `0600` for `root`, so without this the
-  server starts, logs `could not listen: EACCES: permission denied, open
-  '/etc/bfwp/tls/privkey.pem'` and restarts forever. 0600 is kept on purpose --
-  the key has to be readable by uid 1000, not by everybody.
+  render.example.com`, then copy `fullchain.pem` and `privkey.pem` into `tls/`.
+  Leave them owned by root at `0600`, which is how certbot writes them: the
+  container stages its own readable copy at startup and drops privileges, so a
+  renewal that rewrites the key cannot break the deployment. `bin/entrypoint.sh`
+  has the whole story, and `BFWP_TLS_CERT` / `BFWP_TLS_KEY` still name where the
+  originals are.
 - **Open port 8443** (and 8444 if you enable audio) inbound.
 - **Docker with the compose plugin.**
 
@@ -69,7 +61,8 @@ You should see:
 ```
 INFO BrowserForWP render server starting (render.example.com)
 WARN no devices are registered in /var/lib/bfwp/devices.json. Nobody can connect until you run:
-WARN   npm run device -- add "my phone"
+WARN   docker compose exec render bin/bfwp-device.sh add "my phone"
+WARN   (or `npm run device -- add` outside a container, where you already are the right user)
 INFO listening on 0.0.0.0:8443 (TLS 1.3 only), 16 session(s) allowed
 INFO audio is off; a page cannot be heard through this server
 ```
@@ -77,8 +70,14 @@ INFO audio is off; a page cannot be heard through this server
 ## Registering a device
 
 ```bash
-docker compose exec render node bin/bfwp-device.js add "Vincenzo's Lumia"
+docker compose exec render bin/bfwp-device.sh add "Vincenzo's Lumia"
 ```
+
+The wrapper and not `node bin/bfwp-device.js` directly: the image starts as root
+(so `bin/entrypoint.sh` can stage the certificate and drop), which means a bare
+`exec` is a root process writing a `0600` registry that the server, as `pwuser`,
+could then neither read nor rewrite. Use `bin/bfwp-device.sh` and the ownership
+stays right.
 
 It prints a device id and a token, and the token is shown **once**. Only its
 SHA-256 is stored, so it is not recoverable. Put both into the phone.
@@ -86,10 +85,10 @@ SHA-256 is stored, so it is not recoverable. Put both into the phone.
 Managing devices:
 
 ```bash
-docker compose exec render node bin/bfwp-device.js list
-docker compose exec render node bin/bfwp-device.js disable <deviceId>
-docker compose exec render node bin/bfwp-device.js enable  <deviceId>
-docker compose exec render node bin/bfwp-device.js remove  <deviceId>
+docker compose exec render bin/bfwp-device.sh list
+docker compose exec render bin/bfwp-device.sh disable <deviceId>
+docker compose exec render bin/bfwp-device.sh enable  <deviceId>
+docker compose exec render bin/bfwp-device.sh remove  <deviceId>
 ```
 
 `disable` is the one to reach for when a phone is lost: it refuses the device
@@ -285,11 +284,11 @@ page when it does.
 | --- | --- |
 | The phone says the certificate is not valid | It is self-signed, or the name does not match `BFWP_PUBLIC_URL`. |
 | The phone connects and immediately gets code 1 | Protocol version mismatch: rebuild one side. |
-| Code 3 | The device id is not in this server's registry. `bfwp-device list`. |
+| Code 3 | The device id is not in this server's registry. `bin/bfwp-device.sh list`. |
 | Code 2 | The token is wrong, or was copied with a trailing space. |
 | Code 6 | `BFWP_MAX_SESSIONS` is reached. Check for devices holding idle sessions. |
 | The screen goes black after the first frame | A frame was never acknowledged, so the tap stayed stopped. The client must `ACK`. |
 | Chromium dies with no error | `shm_size` is too small. 1 GB, not the 64 MB default. |
 | `Could not start a browser session` | Playwright was installed without a browser, or the image tag and the package version disagree. The build refuses that pair now, so this means an image built before that check existed: rebuild. |
-| `could not listen: EACCES ... privkey.pem` | The mounted key belongs to the host user, not to uid 1000. See "What you need". |
-| Code 3 immediately after `bfwp-device add` | The server is an image old enough to read the registry once at startup. Rebuild it; the current one reloads and logs it. |
+| `could not listen: EACCES ... privkey.pem` | The entrypoint could not read the mounted key either -- it is not a permissions question you can fix with `chown` alone if the mount is read-protected for root too, e.g. an encrypted volume nobody unlocked. Check `docker compose logs` for the `entrypoint:` lines, which say which path was taken. |
+| Code 3 immediately after adding a device | Either the server is an image old enough to read the registry once at startup (rebuild; the current one reloads and logs it), or the registry was written by a root `exec` and the server cannot read it -- use `bin/bfwp-device.sh`. |

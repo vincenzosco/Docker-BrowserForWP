@@ -56,6 +56,23 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # ...and three back, which is the whole set a privilege-dropping entrypoint
+    # needs and no more:
+    #
+    #   SETUID, SETGID  so it can become pwuser at all -- `setpriv: setresuid
+    #                   failed: Operation not permitted` on every start without them
+    #   CHOWN           so it can hand the staged copy of the key to pwuser --
+    #                   `chown: changing ownership ...: Operation not permitted`
+    #
+    # Both failures were measured on the first deployment, one restart apart. The
+    # capabilities belong to the ENTRYPOINT's process for the few milliseconds
+    # before it execs, and the kernel clears the permitted and effective sets when a
+    # process moves from uid 0 to a non-zero uid, so the server that ends up serving
+    # pages holds none of them.
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
     # Chromium in a container needs more than the default 64 MB of /dev/shm, and
     # running out of it is the classic "the browser dies for no reason".
     shm_size: 1gb

@@ -69,7 +69,19 @@ COPY protocol ./protocol
 COPY src ./src
 COPY bin ./bin
 
-USER pwuser
+# Both are executed, and a COPY preserves the source file's mode: if one arrives
+# without the execute bit the container fails with "permission denied" at the least
+# helpful moment -- for the entrypoint that is every start. One line here, and the
+# mode in git, both say the same thing.
+RUN chmod +x /app/bin/entrypoint.sh /app/bin/bfwp-device.sh
+
+# ROOT AT START ONLY, to stage the certificate: the mounted private key belongs to
+# the host's user and a bind mount cannot be chowned from inside, while the server
+# must not run as root. bin/entrypoint.sh copies the pair somewhere the app user
+# can read it and then drops to pwuser for the actual process -- see that file for
+# why a documented `chown` was not good enough. The image itself contains nothing
+# writable by the app user, so the window is a copy and an exec.
+USER root
 
 # 8443 is the render channel (TLS 1.3 only). 8444 is the audio endpoint, spoken
 # to by MediaElement over TLS 1.2+ and only opened when audio is enabled.
@@ -78,4 +90,7 @@ EXPOSE 8443 8444
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["node", "bin/healthcheck.js"]
 
+# The entrypoint receives this as its arguments and passes them on after it has
+# dropped privileges. It is exec form for exactly that reason.
+ENTRYPOINT ["/app/bin/entrypoint.sh"]
 CMD ["node", "bin/bfwp-render.js"]

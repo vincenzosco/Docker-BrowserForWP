@@ -45,7 +45,8 @@ async function main() {
 
   if (store.size === 0) {
     log.warn(`no devices are registered in ${config.devicesFile}. Nobody can connect until you run:`);
-    log.warn('  npm run device -- add "my phone"');
+    log.warn('  docker compose exec render bin/bfwp-device.sh add "my phone"');
+    log.warn('  (or `npm run device -- add` outside a container, where you already are the right user)');
   } else {
     log.info(`device registry: ${store.size} device(s)`);
   }
