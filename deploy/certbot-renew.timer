@@ -1,0 +1,25 @@
+# Runs certbot-renew.service twice a day, which is far more often than a
+# 6-day certificate needs: the certificate has 160 hours of life and certbot
+# renews it once a third of that has gone, so two runs a day leaves several days
+# of slack for a run that fails (Let's Encrypt unreachable, port 80 taken by
+# something else at that moment). Twice a day is also what the packaged timer
+# does, so a reader who has seen one before is not surprised.
+#
+# Persistent=true: if the host is off when a run was due, it runs at the next
+# boot instead of being skipped.
+#
+# The random delay spreads renewals across the hour for everyone using Let's
+# Encrypt; for a single host it only matters as a reminder that this is a shared
+# service.
+
+[Unit]
+Description=Run the BrowserForWP certificate renewal twice a day
+
+[Timer]
+OnCalendar=*-*-* 00,12:17:00
+RandomizedDelaySec=3600
+Persistent=true
+Unit=certbot-renew.service
+
+[Install]
+WantedBy=timers.target

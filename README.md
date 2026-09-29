@@ -67,7 +67,10 @@ git clone https://github.com/vincenzosco/Docker-BrowserForWP
 cd Docker-BrowserForWP
 
 # 1. A certificate. The phone validates the chain and the name before it sends a
-#    byte, so this must be a real one. See docs/DEPLOY.md.
+#    byte, so this must be a real one -- and it can be for a NAME or for the bare
+#    IP: Let's Encrypt issues for addresses too, under its 6-day `shortlived`
+#    profile. See docs/DEPLOY.md, "HTTPS without a domain", which also installs
+#    the renewal timer such a certificate cannot outlive.
 mkdir -p tls && cp /etc/letsencrypt/live/render.example.com/fullchain.pem tls/
 cp /etc/letsencrypt/live/render.example.com/privkey.pem tls/
 
@@ -141,12 +144,16 @@ server, and it is the only thing in here that has ever spoken to one.
 ## Honest limits
 
 - **The handset has never spoken to a deployment.** The server has: it runs on a
-  1 GB `e2-micro`, and `bin/bfwp-smoke.js` completes a full session against it --
-  TLS 1.3, a real frame, and a tap that reports where the page's focus is. What
-  that run needs from you is a certificate from a real CA for a name the phone can
-  validate, and port 8443 open; until then the client's whole device-side half
-  (the picture, the soft keyboard, the audio element) is still unrun. See
-  `docs/DEPLOY.md` and the verification table in the client repository.
+  1 GB `e2-micro` with a publicly trusted certificate for its own address and
+  port 8443 open, and `bin/bfwp-smoke.js` completes a full session against it --
+  TLS 1.3 with the chain verified, a real frame, and a tap that reports where the
+  page's focus is. What is still unrun is the client's whole device-side half: the
+  picture, the soft keyboard, the audio element, and the two things a phone must
+  do before any of it -- trust one of the ISRG roots the IP chain ends at, and
+  match an address that appears in the certificate as an `iPAddress` entry rather
+  than a `dNSName`. The client's TLS stack reads only `dNSName` at the time of
+  writing, from a 2014-era platform whose root store we cannot inspect from here.
+  See `docs/DEPLOY.md` and the verification table in the client repository.
 - **One page held 231 MiB peak** in its container, measured on that host. The
   compose default of 16 sessions assumes 2.5 GB and up; on a small machine set
   `BFWP_MAX_SESSIONS` to what the box can actually hold.

@@ -1,0 +1,29 @@
+; Renew the 6-day IP certificate. Paired with certbot-renew.timer.
+;
+; WHY A UNIT AND NOT THE PACKAGE'S OWN TIMER. This deployment installs certbot
+; from a venv (/opt/certbot), because the version in Ubuntu 24.04's archive is
+; older than the 5.4 that `--ip-address` needs, and only the distro package
+; ships a timer. Without this pair the certificate renews never -- not late,
+; never -- and the server presents an expired certificate six days after it is
+; issued.
+;
+; The deploy hook is NOT named here on purpose: certbot runs everything in
+; /etc/letsencrypt/renewal-hooks/deploy/ on every successful renewal, so the
+; hook is installed once and this unit stays about scheduling.
+;
+; Type=oneshot with no [Install] WantedBy: the timer is what starts it, and a
+; service that also wanted to run at boot would race the network.
+
+[Unit]
+Description=Renew the BrowserForWP render server's Let's Encrypt certificate
+Documentation=file:///home/vincenzo/Docker-BrowserForWP/docs/DEPLOY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/certbot/bin/certbot renew --non-interactive --quiet
+; A renewal that failed must be visible. `--quiet` still prints errors, and the
+; journal keeps them.
+StandardOutput=journal
+StandardError=journal

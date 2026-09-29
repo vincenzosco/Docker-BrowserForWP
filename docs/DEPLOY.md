@@ -6,11 +6,17 @@
   device is a Chromium page; the default `BFWP_MAX_SESSIONS` of 16 assumes more
   memory than 2 GB, so lower it if you are small. `docker-compose.yml` limits the
   container to 2 GB and that limit is real.
-- **A domain and a certificate from a real CA.** The phone validates the chain
-  and the host name before it sends a byte, so a self-signed certificate is not a
-  shortcut to test with -- it is a wall. `certbot certonly --standalone -d
-  render.example.com`, then copy `fullchain.pem` and `privkey.pem` into `tls/`.
-  Leave them owned by root at `0600`, which is how certbot writes them: the
+- **A certificate from a real CA, for the name or the address phones use.** The
+  phone validates the chain *and* the name before it sends a byte, so a
+  self-signed certificate is not a shortcut to test with -- it is a wall. Two
+  ways to get one:
+  * **with a domain**: `certbot certonly --standalone -d render.example.com`,
+    then copy `fullchain.pem` and `privkey.pem` into `tls/`;
+  * **with the bare IP, no domain**: Let's Encrypt issues for IP addresses under
+    its `shortlived` profile, a **six-day** certificate renewed by a timer. See
+    *HTTPS without a domain* below, which is what the live deployment does.
+
+  Leave the files owned by root at `0600`, which is how certbot writes them: the
   container stages its own readable copy at startup and drops privileges, so a
   renewal that rewrites the key cannot break the deployment. `bin/entrypoint.sh`
   has the whole story, and `BFWP_TLS_CERT` / `BFWP_TLS_KEY` still name where the
@@ -66,6 +72,112 @@ WARN   (or `npm run device -- add` outside a container, where you already are th
 INFO listening on 0.0.0.0:8443 (TLS 1.3 only), 16 session(s) allowed
 INFO audio is off; a page cannot be heard through this server
 ```
+
+## HTTPS without a domain
+
+Let's Encrypt began issuing certificates for **IP addresses** in January 2026, so
+a deployment can be addressed the way this one is -- `BFWP_PUBLIC_URL` holds an
+address, not a name -- and still present a chain a stranger's client validates.
+Three things are required, and each one is why a command below looks the way it
+does.
+
+**1. certbot 5.4 or newer.** `--ip-address` arrived in 5.3 and the webroot
+support for addresses in 5.4; Ubuntu 24.04's archive predates both, so certbot
+comes from a virtualenv:
+
+```bash
+sudo apt-get install -y python3-venv
+sudo python3 -m venv /opt/certbot
+sudo /opt/certbot/bin/pip install --upgrade pip certbot
+/opt/certbot/bin/certbot --version    # 5.4 or newer
+```
+
+**2. The `shortlived` profile.** It is the only profile that issues for an IP
+address, and it is why these certificates live **160 hours** (six days and a
+half). This is not a fire-and-forget certificate: the renewal timer is part of
+the installation, not an improvement to it. The profile also issues **no common
+name** -- the address appears only in the `subjectAltName`, as an `iPAddress`
+entry -- which is what a client has to match against.
+
+**3. Port 80 reachable from the Internet while issuing**, because HTTP-01 is the
+only challenge available for an address. Nothing has to serve on it afterwards:
+`--standalone` binds it only to answer the challenge.
+
+```bash
+IP=203.0.113.7        # the address in BFWP_PUBLIC_URL, without the scheme
+
+# Always rehearse against staging first. The staging server has far higher rate
+# limits, which is the entire point of it.
+sudo /opt/certbot/bin/certbot certonly --staging --standalone \
+  --preferred-profile shortlived --ip-address "$IP" --cert-name "$IP" \
+  --non-interactive --agree-tos --register-unsafely-without-email
+
+# ...then the real one.
+sudo /opt/certbot/bin/certbot certonly --standalone \
+  --preferred-profile shortlived --ip-address "$IP" --cert-name "$IP" \
+  --non-interactive --agree-tos --register-unsafely-without-email
+```
+
+> **The staging certificate is a trap, and it is quiet.** Run the staging command
+> and then the production one with the same `--cert-name`, and certbot answers
+> *"Certificate not yet due for renewal; no action taken"*: exit code 0, no
+> change to the file, and a deployment still serving `(STAGING)` issuers that no
+> phone trusts. Check the issuer of what you are about to serve, or delete the
+> staging lineage (`certbot delete --cert-name "$IP"`) before requesting the real
+> one. Both were measured here.
+
+### Renewing it
+
+The pair has to be copied into `tls/` and the container restarted after every
+renewal, because the server reads the certificate once, at startup.
+`bin/bfwp-renew-hook.sh` does both, waits for the container's own health check,
+and exits non-zero if the server did not come back -- a hook that swallowed the
+failure would leave a healthy-looking server with a stale certificate:
+
+```bash
+sudo install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
+sudo install -m 0755 bin/bfwp-renew-hook.sh \
+  /etc/letsencrypt/renewal-hooks/deploy/bfwp-renew-hook.sh
+sudo install -m 0644 deploy/certbot-renew.service deploy/certbot-renew.timer \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now certbot-renew.timer
+systemctl list-timers certbot-renew.timer
+```
+
+The hook defaults to `CERT_NAME=203.0.113.7` and
+`REPO=/home/vincenzo/Docker-BrowserForWP`; both, plus the compose service name,
+can be set in `/etc/default/bfwp-render`. Rehearse the whole loop rather than
+waiting six days for it:
+
+```bash
+sudo systemctl start certbot-renew.service
+journalctl -u certbot-renew.service -n 20 --no-pager
+```
+
+Two rate limits bound this arrangement, and the second is the one to respect:
+**50 certificates per IPv4 address every 7 days**, and **5 per exact set of
+identifiers every 7 days** (refilling at one per 34 hours) -- with a single
+identifier, "the exact set" is that address. A six-day certificate renewed at
+roughly two thirds of its life is two or three issuances a week, inside the five.
+Certbot 5.x renews through ACME Renewal Information, and ARI renewals are exempt
+from every rate limit; the way to lose that exemption is to delete
+`/etc/letsencrypt` "to start clean", which is exactly the *common cause* Let's
+Encrypt names for this limit.
+
+### What a phone has to do with it
+
+Serving an IP certificate is half the arrangement; the other half is a client
+that matches it. Two facts, both checkable from the certificate:
+
+* the chain presented is the leaf, `YE1`, `ISRG Root YE`, and **`ISRG Root X2`
+  cross-signed by `ISRG Root X1`** -- so a device needs one of those two roots in
+  its trust store, and a 2014-era phone that stopped receiving root updates will
+  not have been issued either by us;
+* the address is in the `subjectAltName` as an `iPAddress` entry and nowhere
+  else, so a client whose hostname matching reads only `dNSName` entries rejects
+  this certificate even though the chain validates. `BrowserForWP`'s own TLS
+  stack did exactly that at the time of writing; see the client repository.
 
 ## Registering a device
 
