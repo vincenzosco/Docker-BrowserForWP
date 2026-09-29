@@ -155,6 +155,16 @@ test('the page may be opened to whoever finds it, and only deliberately', () => 
   assert.equal(open.registerOpen, true);
 });
 
+test('the page says where a token is removed, and that address must be https', () => {
+  assert.equal(loadConfig({}).issuesUrl,
+    'https://github.com/vincenzosco/Docker-BrowserForWP/issues',
+    'a person who lost a token needs somewhere to ask, by default');
+  assert.equal(loadConfig({ BFWP_ISSUES_URL: 'https://example.com/issues/' }).issuesUrl,
+    'https://example.com/issues', 'the trailing slash is not part of the path');
+  assert.throws(() => loadConfig({ BFWP_ISSUES_URL: 'http://example.com/issues' }), /must be https/);
+  assert.throws(() => loadConfig({ BFWP_ISSUES_URL: 'not a url' }), /is not a URL/);
+});
+
 test('the low-memory chromium flags are opt-in, because isolation is the trade', () => {
   assert.equal(loadConfig({}).chromiumLowMemory, false);
   assert.equal(loadConfig({ BFWP_CHROMIUM_LOW_MEMORY: '1' }).chromiumLowMemory, true);

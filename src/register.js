@@ -187,6 +187,18 @@ export function createRegistrationServer({ config, store, log, now = Date.now, r
     return !secretMatches(presented, config.registerSecret);
   }
 
+  /**
+   * The one sentence this page repeats wherever a token is mentioned: where a token
+   * is removed. It is a link and not an instruction to find the operator, because
+   * the person holding the phone has no way to find one -- and an issue is the one
+   * request channel a self-hosted server is guaranteed to have.
+   */
+  function removalsNote() {
+    return 'To have a token removed, open a request at '
+      + `<a href="${escapeHtml(config.issuesUrl)}">${escapeHtml(config.issuesUrl)}</a>`
+      + ' and quote the device id it belongs to.';
+  }
+
   function formBody({ question, nonce, action, label = '' }) {
     const secretField = config.registerSecret.length > 0
       ? `<label for="secret">Access code</label>
@@ -218,7 +230,8 @@ ${config.registerPerDay > 0
         ? 'one token' : `${config.registerPerDay} tokens`} per day.</p>\n`
       : ''}<p class="muted">A token belongs to the first phone that uses it. If you lose the
 token, you will need a new one; it is stored here only as a digest and cannot be
-shown again.</p>`;
+shown again.</p>
+<p class="muted">${removalsNote()}</p>`;
   }
 
   // `now` and `random` are injected so the tests can drive the age window and the
@@ -273,7 +286,8 @@ shown again.</p>`;
         + `<p>This address has already been given as many tokens as it can have ${windowName}:`
         + ` ${limit}. Another one becomes available ${escapeHtml(waitPhrase(refused.freesInMs))}.</p>`
         + '<p class="muted">A token belongs to one phone and is shown once, so a token'
-        + ' that was not written down is a token to ask the operator to replace.</p>'));
+        + ' that was not written down is a token to ask about.</p>'
+        + `<p class="muted">${removalsNote()}</p>`));
       return;
     }
 
@@ -337,12 +351,12 @@ shown again.</p>`;
 <p>Then <strong>Settings &rarr; Rendering engine &rarr; Server (Chromium
 remotely)</strong>.</p>
 <p class="muted">This token belongs to the first phone that uses it. Another phone
-presenting it will be refused; if you replace the phone, the operator runs
-<code>bfwp-device release ${escapeHtml(device.deviceId)}</code> to give it
-up.</p>
-<p class="muted">Registered as <code>${escapeHtml(device.label)}</code>. Give this id to the
-operator if you ever need the token revoked:
-<code>${escapeHtml(device.deviceId)}</code></p>`));
+presenting it will be refused, so a token that is passed on stops working for
+everybody rather than working for two.</p>
+<p class="muted">${removalsNote()}</p>
+<p class="muted">Registered as <code>${escapeHtml(device.label)}</code>. The id to quote
+in that request is <code>${escapeHtml(device.deviceId)}</code>; the operator of this
+server removes it with <code>bfwp-device release ${escapeHtml(device.deviceId)}</code>.</p>`));
   }
 
   function handler(req, res) {

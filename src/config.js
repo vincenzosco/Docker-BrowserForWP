@@ -39,6 +39,11 @@ export const DEFAULTS = Object.freeze({
   registerHttpPort: 0,
   registerUrl: '',
   registerSecret: '',
+  // Where a person asks for a token of theirs to be removed. The registration page
+  // is the only place a token is handed out, so it is the only place that can say
+  // what to do when one is lost -- and the answer has to be something the person
+  // holding the phone can actually do, which is open an issue.
+  issuesUrl: 'https://github.com/vincenzosco/Docker-BrowserForWP/issues',
   // An open page mints tokens for whoever finds it: no access code, and the
   // challenge and the per-address limits are all that is left. Off by default.
   registerOpen: false,
@@ -137,6 +142,7 @@ export function loadConfig(env = process.env) {
     registerHttpPort: intFrom(env, 'BFWP_REGISTER_HTTP_PORT', DEFAULTS.registerHttpPort, { min: 0, max: 65535 }),
     registerUrl: stringFrom(env, 'BFWP_REGISTER_URL', DEFAULTS.registerUrl),
     registerSecret: stringFrom(env, 'BFWP_REGISTER_SECRET', DEFAULTS.registerSecret),
+    issuesUrl: stringFrom(env, 'BFWP_ISSUES_URL', DEFAULTS.issuesUrl),
     registerOpen: boolFrom(env, 'BFWP_REGISTER_OPEN', DEFAULTS.registerOpen),
     // 0 turns the rate limit off, for a deployment that would rather accept any
     // number of registrations than ever refuse a legitimate one.
@@ -192,6 +198,23 @@ export function loadConfig(env = process.env) {
         + ' another http url would leave the token on the wire.');
     }
     config.registerUrl = target.origin + (target.pathname === '' ? '/' : target.pathname);
+  }
+
+  // The page says where a token is removed, and the address it says has to be one
+  // the person can open: https, because a request page reached over plain http is a
+  // request page that can be rewritten on the way.
+  {
+    let issues;
+    try {
+      issues = new URL(config.issuesUrl);
+    } catch {
+      throw new ConfigError(`BFWP_ISSUES_URL is not a URL: ${JSON.stringify(config.issuesUrl)}`);
+    }
+    if (issues.protocol !== 'https:' && !allowInsecure) {
+      throw new ConfigError('BFWP_ISSUES_URL must be https://: the registration page '
+        + 'sends people there to ask for a token to be removed.');
+    }
+    config.issuesUrl = issues.origin + (issues.pathname === '/' ? '' : issues.pathname.replace(/\/$/, ''));
   }
 
   // AND THE REFUSALS THAT MATTER, because this page mints credentials: anybody who

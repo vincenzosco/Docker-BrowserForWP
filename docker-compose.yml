@@ -89,6 +89,9 @@ services:
       BFWP_REGISTER_PER_HOUR: "${BFWP_REGISTER_PER_HOUR:-3}"
       # The limit that matters on a published page.
       BFWP_REGISTER_PER_DAY: "${BFWP_REGISTER_PER_DAY:-1}"
+      # Where the page sends people who need a token removed. A fork should point
+      # this at its own issues, or the requests arrive at somebody else's door.
+      BFWP_ISSUES_URL: "${BFWP_ISSUES_URL:-}"
     volumes:
       - ./tls:/etc/bfwp/tls:ro
       - devices:/var/lib/bfwp

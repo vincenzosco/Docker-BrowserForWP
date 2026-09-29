@@ -509,6 +509,43 @@ test('there is no plain-http listener unless a deployment asks for one', async (
   assert.equal(page.registration.redirectUrl, null);
 });
 
+test('every page that mentions a token says where it is removed', async (t) => {
+  const page = await freshPage();
+  t.after(() => page.registration.stop());
+
+  const form = await getForm(page);
+  assert.match(form.html, /github\.com\/vincenzosco\/Docker-BrowserForWP\/issues/,
+    'the form says it before a token exists, which is when it is worth knowing');
+
+  const { html } = await register(page);
+  const id = html.match(/The id to quote\s*in that request is <code>([^<]+)<\/code>/)?.[1];
+  assert.ok(id, 'the page names the device id to quote in the request');
+  assert.match(html, /href="https:\/\/github\.com\/vincenzosco\/Docker-BrowserForWP\/issues"/);
+  assert.ok(html.includes(`bfwp-device release ${id}`),
+    'and the operator half of the same request, for whoever has a shell');
+});
+
+test('a fork can point the removal requests at its own issues', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bfwp-register-'));
+  const config = loadConfig({
+    BFWP_ALLOW_INSECURE: '1',
+    BFWP_REGISTER_PORT: '0',
+    BFWP_ISSUES_URL: 'https://issues.example/bfwp',
+    BFWP_DEVICES_FILE: path.join(directory, 'devices.json'),
+  });
+  const registration = createRegistrationServer({
+    config,
+    store: new DeviceStore(config.devicesFile).load(),
+    log: createLog({ level: 'error', sink: { out: { write() {} }, err: { write() {} } } }),
+  });
+  registration.start();
+  t.after(() => registration.stop());
+  await registration.ready;
+
+  const response = await fetch(registration.url);
+  assert.match(await response.text(), /https:\/\/issues\.example\/bfwp/);
+});
+
 test('an open page has no code field, and mints for whoever arrives', async (t) => {
   const page = await freshPage({ open: true, perDay: 0, perHour: 0 });
   t.after(() => page.registration.stop());
