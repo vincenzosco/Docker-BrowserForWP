@@ -388,3 +388,35 @@ export function decodeAudio(payload) {
 }
 
 export const AUDIO_FLAG = HELLO_ACK_FLAG_AUDIO;
+
+/**
+ * 0x27 FOCUS, server to client.
+ *
+ * One byte, because one bit is the whole question the client asks: is the thing
+ * that has the page's focus able to take text? The answer decides whether the
+ * phone raises its soft keyboard, and it has to come from here — the page lives
+ * on this side, and the phone cannot see a caret, a field or a focus ring.
+ *
+ * It is NOT "the page has a text field". It is "the focus is in one right now",
+ * which is why the session sends it on a change rather than a schedule: a tap on
+ * a link and a tap on a search box are the same message with a different byte,
+ * and a client that guessed from the page would raise the keyboard on both.
+ *
+ * The kind of field (password, email, number) would let the phone choose a soft
+ * keyboard layout, and is deliberately absent: the decoders reject trailing
+ * bytes, so adding it is a change in two repositories and in the vectors, and a
+ * layout that no handset here can confirm is not worth that yet.
+ */
+export function encodeFocus({ editable }) {
+  return new Writer().u8(editable ? 1 : 0).build();
+}
+
+export function decodeFocus(payload) {
+  const reader = new Reader(payload);
+  const raw = reader.u8();
+  reader.end();
+  // 0 and 1 only. A third value is a client or a server that invented an
+  // extension without a version, and "truthy" would hide it.
+  if (raw > 1) throw new ProtocolError(`focus.editable must be 0 or 1, got ${raw}`);
+  return { editable: raw === 1 };
+}

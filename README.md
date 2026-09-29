@@ -53,6 +53,13 @@ this properly, including what the sealing layer does and does not protect.
 The phone never fetches the page. It sends the URL, and receives JPEG frames.
 Nothing about the page -- its HTML, its scripts, its cookies -- is on the device.
 
+One consequence worth naming, because it is the reason a message exists for it:
+the phone is holding a picture, so it cannot see where the page's focus is. It
+asks, and the server answers with `FOCUS` (`0x27`): one byte, sent when the answer
+changes, meaning *the focused element takes text*. That single byte is what the
+handset raises its soft keyboard on, so the keyboard no longer covers half the
+page on every tap. `docs/PROTOCOL.md` has the field and the rules.
+
 ## Quick start
 
 ```bash
@@ -103,7 +110,7 @@ cannot read a page.
 | Transport | TLS 1.3, `TLS_AES_128_GCM_SHA256` / `TLS_CHACHA20_POLY1305_SHA256`, nothing older |
 | Framing | 16-byte header, big-endian, `length` authenticated as AAD |
 | Sealing | HKDF-SHA256 from the device token, one key per direction, per-frame AEAD |
-| Messages | 23 types, binary, no JSON and no base64 anywhere |
+| Messages | 24 types, binary, no JSON and no base64 anywhere |
 
 `docs/PROTOCOL.md` is the field-by-field reference. `protocol/vectors.json` is
 the same protocol as concrete bytes, and it is what the phone's VB
@@ -115,7 +122,7 @@ re-implementation is checked against.
 npm test
 ```
 
-143 tests, no network, no Chromium, no Docker. They cover the wire format, the
+148 tests, no network, no Chromium, no Docker. They cover the wire format, the
 key schedule against the RFC 5869 vectors, sealing against tampering, replay and
 reordering, the device registry, the configuration refusals, the log scrubber,
 the session state machine, and -- with real sockets -- the listener, the TLS 1.3

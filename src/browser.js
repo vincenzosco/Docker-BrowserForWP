@@ -210,6 +210,49 @@ export function createPlaywrightBrowserFactory({ config, log }) {
           }
         },
 
+        /**
+         * Whether the page's focused element can take text.
+         *
+         * One evaluate, because the question is about the DOCUMENT and the
+         * document is the only place that knows: an <input> with a type nobody
+         * types into (button, checkbox, submit, radio, file, image) holds focus
+         * without accepting a keystroke, contenteditable holds focus and does,
+         * and nothing else does. Mirroring this in the session would need the
+         * session to know about HTML, so the answer is produced here.
+         *
+         * Returns False rather than throwing when the page cannot be asked: a
+         * focus report is worth a great deal less than the navigation it would
+         * otherwise break.
+         */
+        async focus() {
+          try {
+            // The list lives INSIDE this function on purpose: page.evaluate
+            // serialises it and runs it in the page, where a closure variable
+            // from here does not exist. A Set defined outside would be a
+            // ReferenceError at the first tap.
+            const editable = await page.evaluate(() => {
+              const NOT_TEXT = [
+                'button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio',
+                'range', 'reset', 'submit',
+              ];
+              const active = document.activeElement;
+              if (!active || active === document.body || active === document.documentElement) {
+                return false;
+              }
+              if (active.isContentEditable) return true;
+              const tag = active.tagName;
+              if (tag === 'TEXTAREA') return true;
+              if (tag !== 'INPUT') return false;
+              const type = (active.getAttribute('type') || 'text').toLowerCase();
+              return NOT_TEXT.indexOf(type) < 0;
+            });
+            return { editable: editable === true };
+          } catch (error) {
+            log.debug('focus query failed', error.message);
+            return { editable: false };
+          }
+        },
+
         async text({ text }) {
           try {
             await page.keyboard.insertText(text);

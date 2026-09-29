@@ -67,6 +67,7 @@ export const Type = Object.freeze({
   FIND_RESULT: 0x24,
   AUDIO: 0x25,
   PONG: 0x26,
+  FOCUS: 0x27,
 });
 
 /**

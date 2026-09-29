@@ -164,6 +164,21 @@ export function buildVectors() {
       hex: messages.encodeNonce(0x01020304).toString('hex'),
     },
     {
+      // Both values, because the byte is the whole message and a client that
+      // confused them would raise the keyboard on a link and swallow it on a
+      // search box -- with a picture that looks right in both cases.
+      name: 'FOCUS_EDITABLE',
+      type: Type.FOCUS,
+      sealed: true,
+      hex: messages.encodeFocus({ editable: true }).toString('hex'),
+    },
+    {
+      name: 'FOCUS_NONE',
+      type: Type.FOCUS,
+      sealed: true,
+      hex: messages.encodeFocus({ editable: false }).toString('hex'),
+    },
+    {
       name: 'FRAME_FULL',
       type: Type.FRAME,
       sealed: true,

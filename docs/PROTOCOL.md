@@ -186,6 +186,7 @@ All of these are sealed.
 | 0x24 | FIND_RESULT | u8 found, u32 matches |
 | 0x25 | AUDIO | u8 playing, str url |
 | 0x26 | PONG | u32 nonce |
+| 0x27 | FOCUS | u8 editable |
 
 ### 0x23 FRAME
 
@@ -200,6 +201,37 @@ Coordinates are device pixels. Tiles are a list rather than one rectangle
 because the primitive that produces them today (Chromium's screencast) hands back
 a whole viewport, and a differ that sends only the changed rectangles is the
 obvious next step. It costs two bytes now and saves a protocol version later.
+
+### 0x27 FOCUS
+
+One byte, and it is the whole message: whether `document.activeElement` in the
+page is something that accepts text — a text-bearing `input`, a `textarea`, or an
+element with `isContentEditable`. The client raises its soft keyboard on `1` and
+lowers it on `0`.
+
+**Sent when the answer changes, not on a schedule.** A `FOCUS` per keystroke would
+spend the channel on a byte that did not move, so the server remembers the last
+value it sent and stays quiet while the answer is the same. It is asked after
+`TAP`, after `KEY` (Tab and Escape move focus), and when a load completes, where
+the new document's focus is an unrelated fact. A `NAVIGATE` resets the remembered
+value to "not asked yet", so the first report after a page change is always sent
+even when it repeats the previous byte.
+
+**Where this comes from, and why it belongs on this end.** The phone is holding a
+picture: it can see neither a caret nor a focus ring nor a text box, so it cannot
+tell a search field from a link — and before this message it had no choice but to
+raise its keyboard on every tap. Whether the focus is editable is a fact about the
+document, and the document is here.
+
+**What is deliberately not in it.** The *kind* of field (password, email, number)
+would let the client choose a soft-keyboard layout, and it is left out because it
+cannot be confirmed without a handset. Both ends reject trailing bytes, so adding
+the field later is a change in two repositories plus the vectors — the honest cost
+of shipping it, and the reason it is a gap with a number on it rather than a field
+nobody reads. A page that focuses a field by itself (`autofocus`, a dialog) does
+not raise the keyboard on the phone until the person touches something: reporting
+that needs the page's own `focusin` through an exposed binding, and neither half
+can see the other today.
 
 ## Flow control
 
@@ -221,7 +253,7 @@ that no longer exists.
 - the PRK and both directional keys,
 - the nonce for five sequence numbers including `0xffffffff`,
 - the encoded bytes of every message,
-- 19 sealed frames in full, with the nonce and the AAD called out separately,
+- 21 sealed frames in full, with the nonce and the AAD called out separately,
   in both directions.
 
 A second implementation of this document passes when it can produce those bytes

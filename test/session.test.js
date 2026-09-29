@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ErrorCode, HEADER_SIZE, Type, decodeFrame } from '../protocol/index.js';
+import { ErrorCode, HEADER_SIZE, Type, decodeFrame, isSealed } from '../protocol/index.js';
 import * as messages from '../protocol/messages.js';
 import { Opener, Sealer, deriveKeys } from '../protocol/seal.js';
 import { DeviceStore } from '../src/devices.js';
@@ -16,13 +16,16 @@ const SESSION_SALT = Buffer.alloc(32, 0x5a);
 // ── The fake browser ────────────────────────────────────────────────────────
 // Small on purpose: it records what it was told and can push an event back, and
 // that is enough to exercise every branch of the session without Chromium.
-function makeBrowserFactory() {
+function makeBrowserFactory({ withFocus = true } = {}) {
   const calls = [];
   let emit = null;
   let browser = null;
 
   const factory = {
     calls,
+    // What the fake page will answer when the session asks whether the focused
+    // element takes text. A test sets this to move the answer.
+    editable: false,
     get browser() {
       return browser;
     },
@@ -54,6 +57,14 @@ function makeBrowserFactory() {
         async stopFrames() { this.framesStopped += 1; },
         async close() { this.closed = true; },
       };
+      // A backend that cannot answer the question at all is a real case, not a
+      // mock convenience: the session must keep working and simply say nothing.
+      if (withFocus) {
+        browser.focus = async () => {
+          calls.push(['focus', { editable: factory.editable }]);
+          return { editable: factory.editable };
+        };
+      }
       return browser;
     },
     async close() {},
@@ -64,13 +75,28 @@ function makeBrowserFactory() {
 // ── The client half, built from the same primitives the phone will use ──────
 function makeClient(tokenText) {
   const token = Buffer.from(tokenText, 'utf8');
+  let keys = null;
   let sealer = null;
   let opener = null;
   return {
     adopt(sessionSalt) {
-      const keys = deriveKeys(token, sessionSalt);
+      keys = deriveKeys(token, sessionSalt);
       sealer = new Sealer(keys.c2s);
       opener = new Opener(keys.s2c);
+    },
+    /**
+     * Every sealed frame in the list, decoded from the first one.
+     *
+     * A fresh Opener rather than the shared one, because the shared one refuses a
+     * sequence number it has already seen -- which is the replay defence doing its
+     * job. A test that reads the transcript twice wants two readings of it, not a
+     * second message.
+     */
+    openAll(frames) {
+      const reader = new Opener(keys.s2c);
+      return frames
+        .filter((frame) => isSealed(decodeFrame(frame).type))
+        .map((frame) => reader.open(frame));
     },
     /** A full sealed frame, and the payload it contains, ready to hand the session. */
     sealed(type, payload) {
@@ -86,14 +112,14 @@ function makeClient(tokenText) {
   };
 }
 
-function harness() {
+function harness({ withFocus = true } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bfwp-session-'));
   const store = new DeviceStore(path.join(directory, 'devices.json'));
   store.load();
   const { device, token } = store.add('test phone');
 
   const out = [];
-  const factory = makeBrowserFactory();
+  const factory = makeBrowserFactory({ withFocus });
   const session = new Session({
     store,
     browserFactory: factory,
@@ -368,7 +394,11 @@ test('tap, scroll, key, text, resize and find all reach the browser', async () =
   const kinds = ctx.factory.calls.map((call) => call[0]);
   assert.deepEqual(
     kinds.filter((kind) => kind !== 'applySettings'),
-    ['tap', 'scroll', 'key', 'text', 'resize', 'find'],
+    // The two `focus` calls are the session asking the page whether its focused
+    // element takes text: after the tap and after the key, because both can move
+    // the focus. They are asserted HERE rather than in their own test so that the
+    // order of a batch cannot change without this line changing too.
+    ['tap', 'focus', 'scroll', 'key', 'focus', 'text', 'resize', 'find'],
   );
   assert.deepEqual(ctx.factory.calls.find((call) => call[0] === 'resize')[1], {
     width: 360,
@@ -379,6 +409,100 @@ test('tap, scroll, key, text, resize and find all reach the browser', async () =
   const findResult = client.open(ctx.out.at(-1));
   assert.equal(findResult.type, Type.FIND_RESULT);
   assert.deepEqual(messages.decodeFindResult(findResult.payload), { found: true, matches: 2 });
+});
+
+// ── FOCUS: where the keyboard comes from ────────────────────────────────────
+// The 0x27 message exists so the phone stops raising its soft keyboard on every
+// tap. The session's half of that is entirely testable here: it asks the page,
+// it sends the answer when it changes, and it stays quiet when it does not.
+
+/** The decoded FOCUS messages the server has sent, oldest first. */
+function focusMessages(ctx, client) {
+  return client
+    .openAll(ctx.out)
+    .filter((message) => message.type === Type.FOCUS)
+    .map((message) => messages.decodeFocus(message.payload));
+}
+
+test('a tap reports whether the page put its focus in a text field', async () => {
+  const ctx = harness();
+  await openSession(ctx);
+  const client = makeClient(ctx.token);
+  client.adopt(messages.decodeHelloAck(decodeFrame(ctx.out[0]).payload).sessionSalt);
+
+  // The page answers "yes, this took text" -- a search box.
+  ctx.factory.editable = true;
+  await ctx.session.onFrame(client.sealed(Type.TAP, messages.encodeTap({ x: 10, y: 20 })).part);
+  assert.deepEqual(focusMessages(ctx, client), [{ editable: true }]);
+
+  // And now "no" -- the next tap landed on a link, which is the case the whole
+  // message exists for: the keyboard must go DOWN, not just fail to come up.
+  ctx.factory.editable = false;
+  await ctx.session.onFrame(client.sealed(Type.TAP, messages.encodeTap({ x: 300, y: 500 })).part);
+  assert.deepEqual(focusMessages(ctx, client), [{ editable: true }, { editable: false }]);
+});
+
+test('an unchanged answer is not sent again', async () => {
+  const ctx = harness();
+  await openSession(ctx);
+  const client = makeClient(ctx.token);
+  client.adopt(messages.decodeHelloAck(decodeFrame(ctx.out[0]).payload).sessionSalt);
+
+  ctx.factory.editable = true;
+  await ctx.session.onFrame(client.sealed(Type.TAP, messages.encodeTap({ x: 1, y: 1 })).part);
+  // Typing is a message per keystroke; a FOCUS per keystroke would spend the
+  // channel on a byte that did not change.
+  for (let index = 0; index < 5; index += 1) {
+    await ctx.session.onFrame(client.sealed(Type.TEXT, messages.encodeText({ text: 'a' })).part);
+  }
+  await ctx.session.onFrame(client.sealed(Type.TAP, messages.encodeTap({ x: 1, y: 2 })).part);
+  // Two taps asked the page twice, and the client heard about it once.
+  assert.equal(ctx.factory.calls.filter((call) => call[0] === 'focus').length, 2);
+  assert.deepEqual(focusMessages(ctx, client), [{ editable: true }]);
+});
+
+test('Tab reports the focus it moved, and a completed load reports the focus it threw away', async () => {
+  const ctx = harness();
+  await openSession(ctx);
+  const client = makeClient(ctx.token);
+  client.adopt(messages.decodeHelloAck(decodeFrame(ctx.out[0]).payload).sessionSalt);
+
+  ctx.factory.editable = true;
+  await ctx.session.onFrame(client.sealed(Type.KEY, messages.encodeKey({ key: 'Tab' })).part);
+  assert.deepEqual(focusMessages(ctx, client), [{ editable: true }]);
+
+  // The page navigated, so its focus is gone whatever the previous document had.
+  ctx.factory.editable = false;
+  ctx.factory.emit({ kind: 'load', state: 1, detail: '' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(focusMessages(ctx, client), [{ editable: true }, { editable: false }]);
+});
+
+test('a navigation makes the next report unconditional', async () => {
+  const ctx = harness();
+  await openSession(ctx);
+  const client = makeClient(ctx.token);
+  client.adopt(messages.decodeHelloAck(decodeFrame(ctx.out[0]).payload).sessionSalt);
+
+  ctx.factory.editable = true;
+  await ctx.session.onFrame(client.sealed(Type.TAP, messages.encodeTap({ x: 1, y: 1 })).part);
+  // Navigate to a page whose first report is the SAME byte as the last one. It
+  // is still a different document's fact, and a client that never heard it would
+  // be holding a keyboard decision made about the page before.
+  await ctx.session.onFrame(client.sealed(Type.NAVIGATE, messages.encodeNavigate({ url: 'https://example.com/' })).part);
+  await ctx.session.onFrame(client.sealed(Type.TAP, messages.encodeTap({ x: 2, y: 2 })).part);
+  assert.deepEqual(focusMessages(ctx, client), [{ editable: true }, { editable: true }]);
+});
+
+test('a browser that cannot be asked about focus is silent, not fatal', async () => {
+  const ctx = harness({ withFocus: false });
+  await openSession(ctx);
+  const client = makeClient(ctx.token);
+  client.adopt(messages.decodeHelloAck(decodeFrame(ctx.out[0]).payload).sessionSalt);
+
+  await ctx.session.onFrame(client.sealed(Type.TAP, messages.encodeTap({ x: 5, y: 5 })).part);
+  assert.equal(ctx.session.state, 'open', 'a missing capability must not close the session');
+  assert.deepEqual(focusMessages(ctx, client), []);
 });
 
 test('a message type a client may not send closes the session', async () => {

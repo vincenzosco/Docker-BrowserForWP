@@ -45,6 +45,7 @@ import {
   decodeTap,
   decodeText,
   encodeAudio,
+  encodeFocus,
   encodeError,
   encodeFindResult,
   encodeFullFrame,
@@ -121,6 +122,10 @@ export class Session {
     this.framesSent = 0;
     this.framesDropped = 0;
     this.closedReason = null;
+    // null means "not asked yet", which is different from "false". See
+    // _reportFocus: a page change resets it, so the first report after a
+    // navigation is always sent even when it repeats the previous byte.
+    this.focusEditable = null;
   }
 
   /** Idle sessions are closed by the server; a phone in a pocket holds a page open. */
@@ -290,7 +295,13 @@ export class Session {
     await this._requestFrame();
   }
 
-  _onBrowserEvent(event) {
+  /**
+   * async because one branch has to ask the page a question before it can finish
+   * reporting. The event source does not await this, which is fine: the handling
+   * up to the first await is synchronous, so the messages that do not need an
+   * answer keep the order they were emitted in.
+   */
+  async _onBrowserEvent(event) {
     if (this.state !== 'open' || !this.channel) return;
     try {
       if (event.kind === 'frame') {
@@ -322,6 +333,12 @@ export class Session {
       }
       if (event.kind === 'load') {
         this._write(Type.LOAD_STATE, encodeLoadState({ state: event.state, detail: event.detail ?? '' }));
+        // A completed load is where the page's focus has been thrown away -- a
+        // navigation replaces the document, and autofocus may or may not have
+        // landed on something that takes text. Reported here rather than left to
+        // the next tap, because a page that focuses its own search box would
+        // otherwise show a keyboard-less cursor until the person touched it.
+        if (event.state === LoadState.DONE) await this._reportFocus();
         return;
       }
       if (event.kind === 'audio') {
@@ -330,6 +347,32 @@ export class Session {
     } catch (error) {
       this.log.error(`${this.sessionId} could not send a ${event.kind} message`, error);
     }
+  }
+
+  /**
+   * Tell the client whether the page's focused element takes text, when the
+   * answer has changed.
+   *
+   * TWO THINGS ARE DELIBERATE HERE. The first is the deduplication: typing a
+   * sentence produces a key or a text message per keystroke, and a FOCUS message
+   * per keystroke would be one message per character spent on a byte that did not
+   * change. The second is that a browser which cannot answer is not an error --
+   * the tests' fake browser and any future backend may have no focus() at all,
+   * and a session that threw there would take the page down with it.
+   */
+  async _reportFocus() {
+    if (typeof this.browser?.focus !== 'function') return;
+    let answer;
+    try {
+      answer = await this.browser.focus();
+    } catch (error) {
+      this.log.debug(`${this.sessionId} could not ask the page about focus`, error.message);
+      return;
+    }
+    if (!answer || typeof answer.editable !== 'boolean') return;
+    if (this.focusEditable === answer.editable) return;
+    this.focusEditable = answer.editable;
+    this._write(Type.FOCUS, encodeFocus({ editable: answer.editable }));
   }
 
   async _requestFrame() {
@@ -344,6 +387,10 @@ export class Session {
       switch (type) {
         case Type.NAVIGATE: {
           const { url } = decodeNavigate(payload);
+          // "Not asked yet" again: the next document's focus is an unrelated
+          // fact, so the first report after this must be sent even if its byte
+          // matches the byte of the page being left behind.
+          this.focusEditable = null;
           await this.browser.navigate(sanitizeUrl(url));
           return;
         }
@@ -373,6 +420,10 @@ export class Session {
         }
         case Type.TAP:
           await this.browser.tap(decodeTap(payload));
+          // The reason this message exists: a tap may have put the page's focus
+          // in a text field, in a button, or nowhere, and only the document can
+          // say which. The phone cannot guess it from the picture.
+          await this._reportFocus();
           return;
         case Type.SCROLL:
           await this.browser.scroll(decodeScroll(payload));
@@ -381,6 +432,11 @@ export class Session {
           const key = decodeKey(payload);
           if (key.key.length > MAX_TEXT_FIELD) throw new ProtocolError('key name is implausibly long');
           await this.browser.key(key);
+          // Tab and Escape both move the focus, and the keys bar offers Tab on
+          // purpose: the phone has no way to press it, and a keyboard that stays
+          // up after Tab landed on a link is the same defect as one that never
+          // came up at all.
+          await this._reportFocus();
           return;
         }
         case Type.TEXT:
