@@ -75,6 +75,12 @@ docker compose exec render node bin/bfwp-device.js add "my phone"
 #    url and the token.
 ```
 
+The client ships pointing at the project's own hosted server, so the address
+field already has something in it: **replace it with yours** in step 4 (or leave
+it, if you are the one running the hosted one). Until a token is pasted, the
+phone draws pages with its own engine and says why, so a self-hosted server that
+is not registered yet costs nothing but a missing picture.
+
 Running it without Docker, for development:
 
 ```bash
