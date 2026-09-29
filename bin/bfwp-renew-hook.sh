@@ -56,8 +56,14 @@ SRC_KEY="${LIVE}/privkey.pem"
 DST_CHAIN="${REPO}/tls/fullchain.pem"
 DST_KEY="${REPO}/tls/privkey.pem"
 
-log() { echo "bfwp-renew-hook: $*" >&2; }
-fail() { log "FAILED: $*"; exit 1; }
+# Progress goes to STDOUT and failures to STDERR, and the split is not cosmetic.
+# certbot prints a hook's stderr under the heading "Hook 'deploy-hook' ran with
+# error output", on a renewal that SUCCEEDED -- so a hook that narrates its
+# work on stderr makes every successful renewal in the log read like a failed
+# one. Measured on the first real renewal: the deploy worked, the server came
+# back healthy, and the line a person would grep for said "error output".
+log() { echo "bfwp-renew-hook: $*"; }
+fail() { echo "bfwp-renew-hook: FAILED: $*" >&2; exit 1; }
 
 [ -r "$SRC_CHAIN" ] || fail "no certificate at ${SRC_CHAIN}"
 [ -r "$SRC_KEY" ] || fail "no private key at ${SRC_KEY}"
