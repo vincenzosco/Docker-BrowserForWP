@@ -236,7 +236,7 @@ capability this image deliberately does not have):
 | --- | --- | --- | --- |
 | `http://<host>/` | 80 | 8080 | a `301` to `BFWP_REGISTER_URL`, and nothing else |
 | `https://<host>/` | 443 | 8445 | the page |
-| `https://<host>:8445/` | 8445 | 8445 | the same page, for a tunnel |
+| `https://<host>:8445/` | 8445 | 8445 | the same page, for a tunnel (its own port; the firewall does not have to open it) |
 
 **All three are published on the HOST'S LOOPBACK by default** --
 `127.0.0.1:8445:8445` and the two above it -- which is what makes a tunnel work
@@ -317,12 +317,19 @@ with the access code when it is set.
 **The per-address limits count the address the LISTENER sees, and that is not
 always the person.** A published port reached through the host -- which is the case
 for anything arriving through the tunnel, and for the server's own requests --
-appears to the container as the Docker bridge (`172.18.0.1`), so every such caller
-shares one allowance. Measured on this deployment: a request from the operator's
-own machine through the tunnel logged `172.18.0.1`; a request from the internet
-logged the client's own address. Two consequences, and both are real: a limit can
-never be claimed as per-client without that measurement, and the operator who
-tests from the server itself is testing the collapsed case.
+appears to the container as the Docker bridge, so every such caller shares one
+allowance. Measured on this deployment, both directions, on 2026-09-29:
+
+| where the request came from | what the page logged |
+| --- | --- |
+| `curl` on the VM to `127.0.0.1:8445`, and through an SSH tunnel from a laptop | `172.18.0.1` |
+| the same laptop over the Internet to `https://<ip>/` | `151.37.250.213`, the laptop's own address |
+
+Two consequences, and both are real. A limit can never be described as per-client
+without saying which path it was measured on, and the operator who tests the page
+from the server itself is testing the collapsed case -- where one allowance covers
+the tunnel, the server, and every other tunnel. The limits are per client for the
+people this page exists for, and per host for the operator.
 
 ### A token belongs to one phone
 
