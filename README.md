@@ -148,12 +148,12 @@ server, and it is the only thing in here that has ever spoken to one.
   port 8443 open, and `bin/bfwp-smoke.js` completes a full session against it --
   TLS 1.3 with the chain verified, a real frame, and a tap that reports where the
   page's focus is. What is still unrun is the client's whole device-side half: the
-  picture, the soft keyboard, the audio element, and the two things a phone must
-  do before any of it -- trust one of the ISRG roots the IP chain ends at, and
-  match an address that appears in the certificate as an `iPAddress` entry rather
-  than a `dNSName`. The client's TLS stack reads only `dNSName` at the time of
-  writing, from a 2014-era platform whose root store we cannot inspect from here.
-  See `docs/DEPLOY.md` and the verification table in the client repository.
+  picture, the soft keyboard, the audio element, and the last gate in front of
+  them: trusting one of the ISRG roots the IP chain ends at, which is a property
+  of the device and cannot be measured from here (the client's TLS stack matches
+  the `iPAddress` in this certificate as of commit `d36a07d` in the client
+  repository, so the name check is no longer a second gate). See `docs/DEPLOY.md`
+  and the verification table in the client repository.
 - **One page held 231 MiB peak** in its container, measured on that host. The
   compose default of 16 sessions assumes 2.5 GB and up; on a small machine set
   `BFWP_MAX_SESSIONS` to what the box can actually hold.

@@ -176,8 +176,11 @@ that matches it. Two facts, both checkable from the certificate:
   not have been issued either by us;
 * the address is in the `subjectAltName` as an `iPAddress` entry and nowhere
   else, so a client whose hostname matching reads only `dNSName` entries rejects
-  this certificate even though the chain validates. `BrowserForWP`'s own TLS
-  stack did exactly that at the time of writing; see the client repository.
+  this certificate even though the chain validates. That is not a rare mistake --
+  OpenSSL's own `s_client -verify_hostname` has it, reported here on the first
+  attempt -- and `BrowserForWP`'s TLS stack had it too, until commit `d36a07d` in
+  the client repository added `iPAddress` matching, verified against this very
+  server (`tools/proto/tls13.mjs 34.132.106.149 8443 --handshake-only`).
 
 ## Registering a device
 
