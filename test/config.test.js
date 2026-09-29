@@ -155,6 +155,12 @@ test('the page may be opened to whoever finds it, and only deliberately', () => 
   assert.equal(open.registerOpen, true);
 });
 
+test('the low-memory chromium flags are opt-in, because isolation is the trade', () => {
+  assert.equal(loadConfig({}).chromiumLowMemory, false);
+  assert.equal(loadConfig({ BFWP_CHROMIUM_LOW_MEMORY: '1' }).chromiumLowMemory, true);
+  assert.throws(() => loadConfig({ BFWP_CHROMIUM_LOW_MEMORY: 'sometimes' }), /must be a boolean/);
+});
+
 test('the plain-http listener needs a target, and the target must be https', () => {
   assert.equal(loadConfig({}).registerHttpPort, 0, 'off unless asked for');
   assert.throws(() => loadConfig({ BFWP_REGISTER_HTTP_PORT: '8080' }), /nowhere to send anyone/);

@@ -62,17 +62,20 @@ services:
       BFWP_LOG_LEVEL: "${BFWP_LOG_LEVEL:-info}"
       BFWP_MAX_SESSIONS: "${BFWP_MAX_SESSIONS:-16}"
       BFWP_FRAME_QUALITY: "${BFWP_FRAME_QUALITY:-60}"
+      # 213 MiB per session instead of 358, and every session in one process: see
+      # "Sizing" in docs/DEPLOY.md for the measurement that says so.
+      BFWP_CHROMIUM_LOW_MEMORY: "${BFWP_CHROMIUM_LOW_MEMORY:-0}"
       # Audio is off by default and needs WITH_AUDIO=1 as well; the FIFO has to
       # be fed by the PulseAudio capture described in docs/DEPLOY.md.
       BFWP_AUDIO_ENABLED: "${BFWP_AUDIO_ENABLED:-0}"
       BFWP_AUDIO_FIFO: /run/bfwp/audio.mp3
       # The page where a phone's owner asks for a token. 0.0.0.0 INSIDE the
       # container, because that is the only address a published port can reach;
-      # what limits who gets there is the host-side publish above. src/config.js
-      # refuses a non-loopback bind with no access code, so the code is required
-      # here -- which is the whole point rather than a formality: the difference
-      # between a private page and a public one is then one variable, and the code
-      # is what makes that variable safe to change.
+      # what limits who gets there is the host-side publish above. A non-loopback
+      # bind is refused unless it has EITHER an access code of some length OR the
+      # explicit decision that there is none -- which is the point rather than a
+      # formality: the difference between a private page and a public one is then
+      # one variable, and src/config.js refuses the two answers at once.
       BFWP_REGISTER_PORT: "${BFWP_REGISTER_PORT:-8445}"
       # The listener that answers 301 to the page and nothing else. Empty means
       # no such listener; when it is set, BFWP_REGISTER_URL is required.

@@ -48,6 +48,41 @@ const MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/
  *          stop, tap, scroll, key, text, resize, applySettings, find, startFrames,
  *          stopFrames, close.
  */
+/**
+ * The flags Chromium is launched with, and why there are two lists.
+ *
+ * One page of example.com at 480x800 costs, measured INSIDE this deployment's
+ * container with `bin/bfwp-measure.js`:
+ *
+ *     BASE_ARGS                       358 MiB in 6 processes
+ *     BASE_ARGS + LOW_MEMORY_ARGS     213 MiB in 3 processes
+ *
+ * and the machine that measurement came from has 953 MB in total, so the
+ * difference is the difference between one session and two. What buys it is
+ * `--single-process`: the renderer runs inside the browser process, and the
+ * renderer is where the memory went. That is also exactly what it costs -- a page
+ * that takes its process down takes every session with it, and every device
+ * shares one renderer -- so it is an operator's decision (BFWP_CHROMIUM_LOW_MEMORY)
+ * rather than a default, and the two lists are kept where the numbers can be read.
+ */
+const BASE_ARGS = [
+  '--no-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-gpu',
+  '--force-color-profile=srgb',
+  '--hide-scrollbars',
+  '--mute-audio',
+];
+
+const LOW_MEMORY_ARGS = [
+  ...BASE_ARGS,
+  '--single-process',
+  '--renderer-process-limit=1',
+  '--js-flags=--max-old-space-size=128',
+  '--disable-background-networking',
+  '--disable-features=Translate,BackForwardCache,MediaRouter,OptimizationHints',
+];
+
 export function createPlaywrightBrowserFactory({ config, log }) {
   let browserPromise = null;
   const pages = new Map();
@@ -56,17 +91,10 @@ export function createPlaywrightBrowserFactory({ config, log }) {
     if (!browserPromise) {
       browserPromise = (async () => {
         const { chromium } = await import('playwright');
-        log.info('launching chromium');
+        log.info(`launching chromium${config.chromiumLowMemory ? ' (low memory flags)' : ''}`);
         return chromium.launch({
           headless: true,
-          args: [
-            '--no-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--force-color-profile=srgb',
-            '--hide-scrollbars',
-            '--mute-audio',
-          ],
+          args: config.chromiumLowMemory ? LOW_MEMORY_ARGS : BASE_ARGS,
         });
       })();
     }

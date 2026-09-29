@@ -50,6 +50,9 @@ export const DEFAULTS = Object.freeze({
   viewportHeight: 800,
   devicePixelRatio: 2,
   blockAds: true,
+  // Off by default: what it buys is memory and what it costs is isolation
+  // between sessions. See the two argument lists in src/browser.js.
+  chromiumLowMemory: false,
   allowInsecure: false,
   logLevel: 'info',
 });
@@ -143,6 +146,7 @@ export function loadConfig(env = process.env) {
     viewportHeight: intFrom(env, 'BFWP_VIEWPORT_HEIGHT', DEFAULTS.viewportHeight, { min: 160, max: 4096 }),
     devicePixelRatio: intFrom(env, 'BFWP_DEVICE_PIXEL_RATIO', DEFAULTS.devicePixelRatio, { min: 1, max: 4 }),
     blockAds: boolFrom(env, 'BFWP_BLOCK_ADS', DEFAULTS.blockAds),
+    chromiumLowMemory: boolFrom(env, 'BFWP_CHROMIUM_LOW_MEMORY', DEFAULTS.chromiumLowMemory),
     allowInsecure,
     logLevel: stringFrom(env, 'BFWP_LOG_LEVEL', DEFAULTS.logLevel),
   };

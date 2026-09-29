@@ -466,6 +466,7 @@ behaving strangely later.
 | `BFWP_DEVICE_PIXEL_RATIO` | `2` | Default device scale factor, 1..4. |
 | `BFWP_PAGE_TIMEOUT_MS` | `30000` | Navigation timeout. |
 | `BFWP_BLOCK_ADS` | `true` | Block a small host list before navigation. |
+| `BFWP_CHROMIUM_LOW_MEMORY` | `false` | Launch Chromium with `--single-process` and the rest of the small list: 213 MiB per session instead of 358, at the price of every session sharing one process. See "Sizing" for the measurements. |
 | `BFWP_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`, `silent`. |
 | `BFWP_AUDIO_ENABLED` | `false` | See below. |
 | `BFWP_AUDIO_FIFO` | `/run/bfwp/audio.mp3` | The capture source for audio. |
@@ -529,9 +530,28 @@ You can, and if you do, know two things:
 | 4-8 | 1.5 GB | Raise `shm_size` with it. |
 | 16 | 2.5 GB+ | The compose default; raise the memory limit too, or lower `BFWP_MAX_SESSIONS`. |
 
-**Measured, not estimated:** one live session with a page in it held the container
-at **231 MiB peak** on a 953 MB `e2-micro`, which is 2-3 devices and not the 16 the
-default allows. Lower `BFWP_MAX_SESSIONS` to match the host rather than the
+**Measured, not estimated.** `bin/bfwp-measure.js`, run inside the container, loads
+one 480x800 page and adds up the resident memory of every process the browser
+started:
+
+| engine | one page | processes |
+| --- | --- | --- |
+| Chromium, the flags in `src/browser.js` | 358 MiB | 6 |
+| the same with `BFWP_CHROMIUM_LOW_MEMORY=1` | **213 MiB** | 3 |
+| Playwright's WebKit | 344 MiB | 4 |
+| Playwright's Firefox | does not launch (180 s timeout) | -- |
+
+So a different engine is not the answer to memory here: WebKit is not lighter, and
+Firefox is not an option at all in this image. The flag is. `--single-process`
+keeps the renderer inside the browser process, and the renderer is where the memory
+went -- which is also exactly what it costs, because every session then shares that
+one process and a page that takes it down takes the others with it.
+`BFWP_CHROMIUM_LOW_MEMORY` is off by default for that reason, and a small box turns
+it on because 953 MB holds two sessions at 213 MiB and one at 358.
+
+A live session was also measured the other way round, as the container's peak with
+a page in it: **231 MiB** on a 953 MB `e2-micro`, which is 2-3 devices and not the
+16 the default allows. Lower `BFWP_MAX_SESSIONS` to match the host rather than the
 aspiration -- a server that accepts a session it cannot hold fails at the browser
 launch, which the phone sees as a page that never arrives.
 
