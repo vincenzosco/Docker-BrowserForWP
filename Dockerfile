@@ -84,8 +84,10 @@ RUN chmod +x /app/bin/entrypoint.sh /app/bin/bfwp-device.sh
 USER root
 
 # 8443 is the render channel (TLS 1.3 only). 8444 is the audio endpoint, spoken
-# to by MediaElement over TLS 1.2+ and only opened when audio is enabled.
-EXPOSE 8443 8444
+# to by MediaElement over TLS 1.2+, and only opened when audio is enabled. 8445 is
+# the registration page (TLS 1.2+), which listens on loopback unless a deployment
+# says otherwise AND sets an access code -- see src/config.js.
+EXPOSE 8443 8444 8445
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["node", "bin/healthcheck.js"]

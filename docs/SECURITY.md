@@ -67,8 +67,41 @@ are in Chromium's memory.
   every line on the way out, with a second net that redacts any base64url-looking
   run of 43 characters or more, so a token that reached a log through a stack
   trace is still caught.
+- **A token belongs to one device.** The first device id that presents it claims
+  it, and the claim is written to the registry before the session opens; any other
+  id is refused with code 8, and the refused attempt does not move the binding. So
+  a token copied to a second phone is refused rather than silently shared, and a
+  token read over a shoulder does not let its holder in while the owner is using
+  it. `bfwp-device release <deviceId>` is the only way a token moves, and it is an
+  operator's command: a client that could release its own binding could also
+  steal one.
+- The device id the client sends is therefore **not a secret and not an
+  authenticator**: it is a name, which is what lets the phone generate its own.
 - Revoking is one command and takes effect on the next connection:
   `bfwp-device disable <deviceId>`.
+
+### The registration page
+
+`src/register.js`, on `BFWP_REGISTER_PORT`, is where somebody without a shell on
+the server asks for a token. It mints the same single-use digest the CLI does,
+shows it once, and stores only the digest -- so it adds no credential store to
+protect, and it has no accounts, no passwords and no reset flow to get wrong.
+
+- **It listens on loopback by default.** `BFWP_REGISTER_HOST` on a non-loopback
+  address is REFUSED unless `BFWP_REGISTER_SECRET` is also set, because a page
+  that mints credentials must not be one mistyped variable away from the open
+  internet. With a secret set, every request needs it: the page and the form.
+- **The bot check is a signed, single-use, expiring challenge** (an arithmetic
+  question whose answer is in an HMAC'd envelope), a honeypot field, a minimum
+  time on the form, and a per-address hourly limit. It stops a script that fills
+  forms. It does not stop somebody solving the challenge by hand, and it is not
+  claimed to: the gate that matters is the loopback default, or the secret.
+- **The page runs no JavaScript**, is served `no-store`, and carries
+  `Content-Security-Policy: default-src 'none'`. A page that hands out a
+  credential is the last place to want a script running.
+- A token minted here is logged the way any other is: never. The address, the
+  device id and the label are logged; the token is registered with the scrubber
+  before the line that could contain it.
 
 ### The audio endpoint
 

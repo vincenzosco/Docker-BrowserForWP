@@ -81,7 +81,10 @@ test('a removal another process made reaches the running server', () => {
   otherProcess(store).remove(device.deviceId);
 
   assert.equal(store.refreshIfChanged(), true);
-  assert.equal(store.verify(device.deviceId, token).code, ErrorCode.UNKNOWN_DEVICE);
+  // BAD_TOKEN and not UNKNOWN_DEVICE: the token is the identity now, so a token
+  // whose row is gone is a token that is not recognised. The registry no longer
+  // knows the id either, but the id was never what authenticated.
+  assert.equal(store.verify(device.deviceId, token).code, ErrorCode.BAD_TOKEN);
 });
 
 test('a registry that has not changed is not re-read', () => {
@@ -107,7 +110,9 @@ test('the public list never exposes the digest', () => {
   const { store } = freshStore();
   store.add('my phone');
   const [entry] = store.list();
-  assert.deepEqual(Object.keys(entry).sort(), ['createdAt', 'deviceId', 'disabled', 'label']);
+  assert.deepEqual(Object.keys(entry).sort(),
+    ['boundDeviceId', 'createdAt', 'deviceId', 'disabled', 'label']);
+  assert.equal(JSON.stringify(store.list()).includes('tokenSha256'), false);
 });
 
 test('a correct token verifies and names the device', () => {
@@ -128,12 +133,117 @@ test('a wrong token is BAD_TOKEN, and says nothing about the device beyond its e
   assert.equal(verdict.device, null);
 });
 
-test('an unknown device id is UNKNOWN_DEVICE', () => {
+test('an unknown token is BAD_TOKEN whatever device id comes with it', () => {
   const { store } = freshStore();
   store.add('my phone');
   const verdict = store.verify('00000000-0000-0000-0000-000000000000', newDeviceToken());
   assert.equal(verdict.ok, false);
-  assert.equal(verdict.code, ErrorCode.UNKNOWN_DEVICE);
+  assert.equal(verdict.code, ErrorCode.BAD_TOKEN);
+});
+
+// ── The token is the identity, and it belongs to one device ────────────────
+// The rule this file grew for the registration page, and the rule that also fixes
+// the handset: the phone generates its own device id and pastes only a token, so a
+// lookup BY ID could never authenticate a real device -- only the smoke client,
+// which takes its id from `add`. An id is a name. The token is the secret, and it
+// is bound to the first name that presents it.
+
+test('the first device to present a token claims it, and the claim reaches the disk', () => {
+  const { store, directory } = freshStore();
+  const { token } = store.add('my phone');
+  assert.equal(store.list()[0].boundDeviceId, null, 'a fresh token belongs to nobody');
+
+  const verdict = store.verify('a-real-phone-id', token);
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.device.boundDeviceId, 'a-real-phone-id');
+
+  const written = JSON.parse(fs.readFileSync(path.join(directory, 'devices.json'), 'utf8'));
+  assert.equal(written.devices[0].boundDeviceId, 'a-real-phone-id',
+    'the claim must survive a restart, not live in this process');
+});
+
+test('the device that claimed a token keeps working', () => {
+  const { store } = freshStore();
+  const { token } = store.add('my phone');
+  assert.equal(store.verify('phone-a', token).ok, true);
+  assert.equal(store.verify('phone-a', token).ok, true);
+  assert.equal(store.verify('phone-a', token).device.boundDeviceId, 'phone-a');
+});
+
+test('another device presenting the same token is TOKEN_BOUND, and does not take it', () => {
+  const { store } = freshStore();
+  const { token } = store.add('my phone');
+  store.verify('phone-a', token);
+
+  const verdict = store.verify('phone-b', token);
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.code, ErrorCode.TOKEN_BOUND);
+  assert.equal(verdict.device, null);
+  assert.equal(store.list()[0].boundDeviceId, 'phone-a',
+    'a stolen token must cost its owner nothing');
+});
+
+test('a device that is disabled is refused before the binding is consulted', () => {
+  const { store } = freshStore();
+  const { device, token } = store.add('stolen phone');
+  store.verify('phone-a', token);
+  store.setDisabled(device.deviceId, true);
+
+  // The right token would be DISABLED_DEVICE; a wrong device id must not turn a
+  // disabled device into a TOKEN_BOUND sentence, which would tell the caller the
+  // token is real and merely elsewhere.
+  assert.equal(store.verify('phone-a', token).code, ErrorCode.DISABLED_DEVICE);
+  assert.equal(store.verify('phone-b', token).code, ErrorCode.DISABLED_DEVICE);
+});
+
+test('releasing a binding is the one way a token moves to another device', () => {
+  const { store } = freshStore();
+  const { device, token } = store.add('my old phone');
+  store.verify('phone-a', token);
+  assert.equal(store.verify('phone-b', token).code, ErrorCode.TOKEN_BOUND);
+
+  assert.equal(store.releaseBinding(device.deviceId), true);
+  assert.equal(store.verify('phone-b', token).ok, true);
+  assert.equal(store.list()[0].boundDeviceId, 'phone-b');
+
+  // Releasing again is not a no-op: it hands the token to whoever comes next,
+  // which is the whole point of an operator command that exists for a replacement
+  // phone. What IS a no-op is releasing a row nobody holds, or a row that is not
+  // there at all.
+  assert.equal(store.releaseBinding(device.deviceId), true);
+  assert.equal(store.verify('phone-a', token).ok, true);
+  assert.equal(store.releaseBinding('no-such-device'), false);
+  store.releaseBinding(device.deviceId);
+  assert.equal(store.releaseBinding(device.deviceId), false, 'released, and nobody has claimed it');
+});
+
+test('a registry an older version wrote claims on first use', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bfwp-devices-'));
+  const file = path.join(directory, 'devices.json');
+  const token = newDeviceToken();
+  fs.writeFileSync(file, JSON.stringify({
+    version: 1,
+    devices: [{
+      deviceId: 'row-from-an-older-version',
+      label: 'my phone',
+      tokenSha256: hashToken(token),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      disabled: false,
+    }],
+  }));
+
+  const store = new DeviceStore(file).load();
+  assert.equal(store.verify('a-new-phone', token).ok, true,
+    'a row with no binding is an unclaimed token, not a broken one');
+  assert.equal(store.list()[0].boundDeviceId, 'a-new-phone');
+});
+
+test('a client that sends no device id cannot claim anything', () => {
+  const { store } = freshStore();
+  const { token } = store.add('my phone');
+  assert.equal(store.verify('', token).code, ErrorCode.UNKNOWN_DEVICE);
+  assert.equal(store.verify(null, token).code, ErrorCode.UNKNOWN_DEVICE);
+  assert.equal(store.list()[0].boundDeviceId, null);
 });
 
 test('a disabled device is DISABLED_DEVICE even with the right token', () => {
@@ -171,7 +281,7 @@ test('removing a device takes its credential away immediately', () => {
   const { device, token } = store.add('old phone');
   assert.equal(store.remove(device.deviceId), true);
   assert.equal(store.remove(device.deviceId), false, 'removing twice is not an error, just false');
-  assert.equal(store.verify(device.deviceId, token).code, ErrorCode.UNKNOWN_DEVICE);
+  assert.equal(store.verify(device.deviceId, token).code, ErrorCode.BAD_TOKEN);
   assert.equal(store.size, 0);
 });
 

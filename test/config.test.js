@@ -96,6 +96,46 @@ test('the devices file is an absolute path, whatever it was given', () => {
   assert.ok(config.devicesFile.endsWith(path.join('data', 'devices.json')));
 });
 
+// ── The registration page ─────────────────────────────────────────────────
+// It mints credentials, so the two refusals below are the feature: loopback by
+// default, and a page reachable from the network only with an access code. A token
+// dispenser on the open internet has to be a decision, not a typo.
+
+test('the registration page is loopback, rate-limited, and secret-free by default', () => {
+  const config = loadConfig({});
+  assert.equal(config.registerHost, '127.0.0.1');
+  assert.equal(config.registerIsLoopback, true);
+  assert.equal(config.registerPort, 8445);
+  assert.equal(config.registerSecret, '');
+  assert.equal(config.registerPerHour, 3);
+});
+
+test('publishing the page without an access code is refused, not warned about', () => {
+  assert.throws(() => loadConfig({ BFWP_REGISTER_HOST: '0.0.0.0' }), /BFWP_REGISTER_SECRET/);
+  assert.throws(() => loadConfig({ BFWP_REGISTER_HOST: '0.0.0.0', BFWP_REGISTER_SECRET: 'too-short' }),
+    /at least 16/);
+
+  const config = loadConfig({ BFWP_REGISTER_HOST: '0.0.0.0', BFWP_REGISTER_SECRET: 'a-code-long-enough' });
+  assert.equal(config.registerIsLoopback, false);
+});
+
+test('localhost is a loopback address, because a deployment may well write it', () => {
+  for (const host of ['127.0.0.1', '::1', 'localhost']) {
+    assert.equal(loadConfig({ BFWP_REGISTER_HOST: host }).registerIsLoopback, true, host);
+  }
+});
+
+test('the registration port cannot collide with the other two listeners', () => {
+  assert.throws(() => loadConfig({ BFWP_REGISTER_PORT: '8443' }), /must differ from BFWP_PORT/);
+  assert.throws(() => loadConfig({ BFWP_REGISTER_PORT: '8444' }), /audio port/);
+  assert.equal(loadConfig({ BFWP_REGISTER_PORT: '9445' }).registerPort, 9445);
+});
+
+test('a rate limit of zero is allowed, and means no limit', () => {
+  assert.equal(loadConfig({ BFWP_REGISTER_PER_HOUR: '0' }).registerPerHour, 0);
+  assert.throws(() => loadConfig({ BFWP_REGISTER_PER_HOUR: '1000' }), /BFWP_REGISTER_PER_HOUR/);
+});
+
 test('every default is present in the frozen defaults table', () => {
   const config = loadConfig({});
   for (const key of Object.keys(DEFAULTS)) {

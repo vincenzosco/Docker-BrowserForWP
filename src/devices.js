@@ -7,6 +7,14 @@
 // not a copy of everybody's credentials, and the tokens cannot be recovered from
 // a backup of it.
 //
+// THE TOKEN IS THE IDENTITY, AND IT BELONGS TO ONE DEVICE. A token is claimed by
+// the first device id that presents it, and any other device id presenting it is
+// refused. That is not a restriction bolted onto a working flow; it is what makes
+// the token a credential rather than a shared password, and it is also what makes
+// the phone's device id harmless to send in the clear -- an id is a name, the
+// token is the secret. The one way a token moves is `bfwp-device release`, which
+// an operator runs on purpose.
+//
 // Two details are load-bearing:
 //
 //   * The comparison is constant-time. A token is a secret compared against a
@@ -132,6 +140,10 @@ export class DeviceStore {
       tokenSha256: hashToken(token),
       createdAt: new Date().toISOString(),
       disabled: false,
+      // Who the token belongs to, written the first time it is used. Null means
+      // "nobody has claimed it yet", including for a row an older version wrote,
+      // which is why load() has nothing to migrate.
+      boundDeviceId: null,
     };
     this.data.devices.push(device);
     this.save();
@@ -140,6 +152,45 @@ export class DeviceStore {
 
   find(deviceId) {
     return this.data.devices.find((device) => device.deviceId === deviceId) ?? null;
+  }
+
+  /**
+   * The row whose token digest matches, or null.
+   *
+   * EVERY ROW IS COMPARED, even once one has matched. Stopping at the first match
+   * would make the response time say WHICH row matched, and the order of the
+   * registry is decided by the operator rather than by the caller. The comparison
+   * is constant-time, so with no early exit the whole lookup is.
+   */
+  findByToken(token) {
+    const claimedHash = hashToken(token);
+    let match = null;
+    for (const device of this.data.devices) {
+      if (constantTimeEqualsHex(claimedHash, device.tokenSha256)) match = device;
+    }
+    return match;
+  }
+
+  /**
+   * Clears a token's binding so another device may claim it. The only way a token
+   * moves, and deliberately an operator's command rather than something a phone
+   * can do: a client that could release its own binding could also steal one.
+   */
+  releaseBinding(deviceId) {
+    const device = this.find(deviceId);
+    if (!device || !device.boundDeviceId) return false;
+    device.boundDeviceId = null;
+    this.save();
+    return true;
+  }
+
+  /** Public view of one row: neither the token nor its digest is part of it. */
+  _publicDevice(device) {
+    return {
+      deviceId: device.deviceId,
+      label: device.label,
+      boundDeviceId: device.boundDeviceId ?? null,
+    };
   }
 
   remove(deviceId) {
@@ -158,11 +209,10 @@ export class DeviceStore {
     return true;
   }
 
-  /** Public view: the hash is never part of it. */
+  /** Public view: the hash is never part of it, and the binding is. */
   list() {
     return this.data.devices.map((device) => ({
-      deviceId: device.deviceId,
-      label: device.label,
+      ...this._publicDevice(device),
       createdAt: device.createdAt,
       disabled: Boolean(device.disabled),
     }));
@@ -173,30 +223,47 @@ export class DeviceStore {
   }
 
   /**
-   * Check a claimed token against a device id.
+   * Check a token, and bind it to the device that presented it.
+   *
+   * The registry is searched BY TOKEN, not by the device id the client claimed.
+   * The old rule could not authenticate a real handset at all: the phone generates
+   * its own id (`RemoteEngine.LoadOrCreateDeviceId`), `bfwp-device add` created
+   * another one, and no field of the phone's settings carried it -- so a handset
+   * would have been refused UNKNOWN_DEVICE for as long as it was used, while the
+   * smoke client, which takes its id from `add`, worked. An id is a name; the
+   * token is the secret, which is what the header of this file says and what this
+   * method now does.
+   *
+   * The first device to present a token claims it, and the claim is written to
+   * disk before the session opens. A second device gets TOKEN_BOUND, and the
+   * attempt does NOT move the binding: a token copied to another phone is refused
+   * rather than silently shared, and a stolen token costs its owner nothing.
    *
    * Always returns one of ErrorCode's values rather than a boolean, because the
-   * caller has to say WHY, and "unknown device" and "wrong token" are different
-   * sentences for the person holding the phone -- one means the id is wrong, the
-   * other means the token is.
+   * caller has to say WHY, and "this token is wrong", "this device was switched
+   * off" and "this token belongs to another phone" are three different sentences
+   * for the person holding the phone.
    */
   verify(deviceId, token) {
-    const claimedHash = hashToken(token);
-    const device = this.find(deviceId);
+    const device = this.findByToken(token);
+    if (!device) return { ok: false, code: ErrorCode.BAD_TOKEN, device: null };
+    if (device.disabled) return { ok: false, code: ErrorCode.DISABLED_DEVICE, device: null };
 
-    if (!device) {
-      // Same work as the found case, so the timing does not leak existence.
-      constantTimeEqualsHex(claimedHash, claimedHash.replace(/./g, '0'));
+    const claimedBy = String(deviceId ?? '');
+    if (claimedBy.length === 0) {
+      // A client that sends no id cannot claim anything. The phone refuses this
+      // itself before it dials, so reaching here means another implementation.
       return { ok: false, code: ErrorCode.UNKNOWN_DEVICE, device: null };
     }
-    if (device.disabled) {
-      constantTimeEqualsHex(claimedHash, device.tokenSha256);
-      return { ok: false, code: ErrorCode.DISABLED_DEVICE, device: null };
+
+    if (!device.boundDeviceId) {
+      device.boundDeviceId = claimedBy;
+      this.save();
+    } else if (device.boundDeviceId !== claimedBy) {
+      return { ok: false, code: ErrorCode.TOKEN_BOUND, device: null };
     }
-    if (!constantTimeEqualsHex(claimedHash, device.tokenSha256)) {
-      return { ok: false, code: ErrorCode.BAD_TOKEN, device: null };
-    }
-    return { ok: true, code: 0, device: { deviceId: device.deviceId, label: device.label } };
+
+    return { ok: true, code: 0, device: this._publicDevice(device) };
   }
 }
 

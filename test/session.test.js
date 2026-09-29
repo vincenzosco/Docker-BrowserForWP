@@ -153,6 +153,32 @@ async function openSession(ctx) {
   });
 }
 
+/**
+ * A second connection against the SAME registry, which is what a token claimed by
+ * one device and presented by another looks like from the server's side.
+ */
+function secondSession(ctx) {
+  const out = [];
+  const session = new Session({
+    store: ctx.store,
+    browserFactory: makeBrowserFactory({}),
+    config: loadConfig({}),
+    send: (buffer) => out.push(buffer),
+    log: createLog({ level: 'silent' }),
+    sessionId: 'second',
+    saltFactory: () => SESSION_SALT,
+  });
+  return { session, out };
+}
+
+async function helloOn(session, deviceId, token) {
+  await session.onFrame({
+    type: Type.HELLO,
+    seq: 0,
+    payload: helloPayload({ deviceId, token }),
+  });
+}
+
 /** Everything after the handshake answer, opened in order with the client's key. */
 function readSealed(ctx, client) {
   return ctx.out.slice(1).map((frame) => client.open(frame));
@@ -261,17 +287,35 @@ test('a wrong token is refused with BAD_TOKEN and no salt', async () => {
   assert.equal(ctx.factory.browser, null, 'no browser should be started for a refused device');
 });
 
-test('an unregistered device id is refused with UNKNOWN_DEVICE', async () => {
+// The defect this pair of tests was written around, and it was a real one: the
+// lookup used to be BY DEVICE ID, against ids only `bfwp-device add` created,
+// while the phone generates its own id and has no settings field for the server's.
+// Every real handset would have been refused, and the smoke client -- which takes
+// its id from `add` -- would have worked. The token is the identity now.
+test('a device id nobody has seen before is accepted, because the token is the identity', async () => {
   const ctx = harness();
-  await ctx.session.onFrame({
-    type: Type.HELLO,
-    seq: 0,
-    payload: helloPayload({ deviceId: '11111111-2222-3333-4444-555555555555', token: ctx.token }),
-  });
+  await helloOn(ctx.session, 'a3f1c8e0-9b27-4f6d-8a51-2c7e4d9b0f13', ctx.token);
 
   const ack = messages.decodeHelloAck(decodeFrame(ctx.out[0]).payload);
+  assert.equal(ack.ok, true);
+  assert.equal(ctx.store.list()[0].boundDeviceId, 'a3f1c8e0-9b27-4f6d-8a51-2c7e4d9b0f13',
+    'the first device to present a token claims it');
+});
+
+test('the same token on a second device is refused with TOKEN_BOUND, and is not stolen', async () => {
+  const ctx = harness();
+  await openSession(ctx);
+  assert.equal(messages.decodeHelloAck(decodeFrame(ctx.out[0]).payload).ok, true);
+
+  const other = secondSession(ctx);
+  await helloOn(other.session, '11111111-2222-3333-4444-555555555555', ctx.token);
+
+  const ack = messages.decodeHelloAck(decodeFrame(other.out[0]).payload);
   assert.equal(ack.ok, false);
-  assert.equal(ack.code, ErrorCode.UNKNOWN_DEVICE);
+  assert.equal(ack.code, ErrorCode.TOKEN_BOUND);
+  assert.equal(other.session.state, 'closed');
+  assert.equal(ctx.store.list()[0].boundDeviceId, ctx.device.deviceId,
+    'the refused attempt must not move the binding');
 });
 
 test('a disabled device is refused even with the token it was issued', async () => {

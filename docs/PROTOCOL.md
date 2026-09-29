@@ -138,11 +138,21 @@ failures after the handshake are `LOAD_STATE`.
 | --- | --- |
 | 1 | Unsupported protocol version. |
 | 2 | The device token does not match. |
-| 3 | This device id is not registered here. |
+| 3 | The client sent no device id. |
 | 4 | This device has been disabled. |
 | 5 | Protocol violation. |
 | 6 | The server is at its session limit. |
 | 7 | The server failed. |
+| 8 | The token belongs to another device. |
+
+**The token is the identity; the device id is a name.** Code 2 is the sentence for
+a token the registry does not know, and code 8 is the sentence for a token it does
+know and which is already claimed by another device: a token is bound to the first
+device id that presents it, and `bfwp-device release <deviceId>` is the only way
+that binding moves. Code 3 therefore means exactly what it says -- no id was sent
+-- rather than "this id is not registered", which was the old rule and which no
+handset could satisfy (the phone generates its own id and has no settings field
+for the server's).
 
 ## Client to server
 

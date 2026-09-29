@@ -247,10 +247,13 @@ export class Session {
     const verdict = this.store.verify(hello.deviceId, hello.token);
     if (!verdict.ok) {
       const message = verdict.code === ErrorCode.UNKNOWN_DEVICE
-        ? 'this device id is not registered on this server'
+        ? 'this device id is not usable: this client sent none'
         : verdict.code === ErrorCode.DISABLED_DEVICE
           ? 'this device has been disabled on this server'
-          : 'the device token does not match';
+          : verdict.code === ErrorCode.TOKEN_BOUND
+            ? 'this token belongs to another device; the operator can release it with'
+              + ' `bfwp-device release <deviceId>`'
+            : 'the device token does not match';
       this._writePlaintext(Type.HELLO_ACK, encodeHelloAckError({ code: verdict.code, message }));
       this.log.warn(`${this.sessionId} refused a device: ${message}`);
       await this.close('authentication refused');
@@ -282,6 +285,7 @@ export class Session {
     this.state = 'open';
     this.log.info(
       `${this.sessionId} opened for device ${this.device.deviceId} `
+      + `claimed by ${this.device.boundDeviceId} `
       + `at ${this.viewport.width}x${this.viewport.height}@${this.viewport.dpr}`,
     );
 

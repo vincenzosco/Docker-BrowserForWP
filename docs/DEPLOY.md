@@ -217,6 +217,82 @@ the running server could not see would be a lost phone that still connects.
 Back up the `devices` volume. Losing it means re-registering every phone, and a
 device that is in nobody's registry is a device nobody can revoke.
 
+### The registration page
+
+`bfwp-device add` needs a shell on the server, and the people who need a token are
+the people holding the phones. So the server also serves a page, on
+`BFWP_REGISTER_PORT` (default `8445`), where somebody fills in a form and is given
+a token once -- the same single-use digest the CLI mints, with no account, no
+password and no reset flow.
+
+**By default it listens on the container's loopback and is not published**, so the
+operator reaches it through a tunnel:
+
+```bash
+# from the machine you are sitting at
+gcloud compute ssh docker1 -- -N -L 8445:127.0.0.1:8445
+# then open http://127.0.0.1:8445/
+```
+
+The server logs the tunnel command it expects at startup, so it is not necessary
+to remember this:
+
+```
+INFO registration page on http://127.0.0.1:8445 (loopback only), 3 per address per hour
+INFO the registration page is loopback only: reach it with an SSH tunnel, e.g. ssh -L 8445:127.0.0.1:8445 the-server
+```
+
+**To let people reach it themselves**, two things have to be set, and the second is
+enforced rather than documented:
+
+```bash
+# .env
+BFWP_REGISTER_HOST=0.0.0.0
+BFWP_REGISTER_SECRET=<at least 16 characters>
+```
+
+...plus the `8445:8445` line in `docker-compose.yml`, which ships commented out
+next to the audio one. Without the secret the server **refuses to start** when the
+host is not a loopback address: a page that mints credentials must not be one
+mistyped variable away from being open to whoever finds the port. With a secret
+set, every request must carry it -- the operator shares it with the people who
+should have a token, and the link is `https://host:8445/?k=<the secret>`.
+
+The form is behind a bot check: an arithmetic question whose answer is inside a
+signed, single-use, expiring envelope, a field a person never fills, a minimum
+time on the form, and `BFWP_REGISTER_PER_HOUR` registrations per address per hour
+(`3` by default; `0` disables the limit). That stops a script that fills forms. It
+does not stop a person solving the question by hand, and nothing here pretends it
+does -- the gate that matters is the loopback default, or the secret.
+
+### A token belongs to one phone
+
+A token is bound to the **first** device that uses it, and the binding is written
+to the registry immediately. A second phone presenting it is refused with
+`TOKEN_BOUND`, and the refused attempt does not move the binding -- so a token
+copied to another handset is refused rather than shared. `bfwp-device list` shows
+who holds what:
+
+```
+enabled   03a74ae5-...  2026-09-29T16:48:50.653Z  claimed by 4f2b...  my phone
+```
+
+Replacing a phone therefore means releasing the token first -- and this is the one
+way a token ever moves:
+
+```bash
+docker compose exec render bin/bfwp-device.sh release <deviceId>
+```
+
+Until it is claimed, a row reads `unbound`, and any phone that presents the token
+takes it.
+
+> **A token used by `bfwp-smoke.js` is claimed by it.** The smoke client sends a
+device id like any other, so if you verify a deployment with the token you were
+going to paste into a phone, the phone will be refused afterwards -- correctly, and
+with a sentence that says so. Use a throwaway token for the smoke test and remove
+it afterwards, or run `release` on it before handing it over.
+
 ## Verifying a deployment
 
 `bin/bfwp-smoke.js` is a client. It is the only thing in this repository that
@@ -235,6 +311,12 @@ From another machine it takes `--host` and `--port` of the server, and it does n
 validate the certificate unless you pass `--verify` -- the phone is the client that
 validates, and being able to diagnose a server behind a self-signed certificate is
 worth more than the check.
+
+**The token you give it is claimed by it.** The smoke client presents a device id
+like any other client, and a token belongs to the first device that uses it (see
+"A token belongs to one phone"): verifying a deployment with the token destined for
+a phone leaves that phone refused with `TOKEN_BOUND`. Mint a throwaway device for
+the test and `remove` it afterwards, or `release` its token before handing it over.
 
 Ten checks. Nine of them pass or fail on their own; the tenth is silence.
 

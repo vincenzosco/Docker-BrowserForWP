@@ -83,10 +83,21 @@ docker compose up -d --build
 #    registry written as root is one the server (as pwuser) cannot then read.
 docker compose exec render bin/bfwp-device.sh add "my phone"
 
+#    ...or let people ask for one themselves on the registration page, which
+#    listens on the container's loopback by default: `ssh -L 8445:127.0.0.1:8445`
+#    and open http://127.0.0.1:8445/. Publishing it needs an access code, and the
+#    server refuses to start without one -- see docs/DEPLOY.md.
+
 # 4. On the phone: Settings → Server, with this server's url in *Server address*
 #    and the token in *Device token*, then Settings → Rendering engine → Server
 #    (Chromium remotely). Both are on one screen, in that order.
 ```
+
+A token is claimed by the FIRST phone that uses it, and refused for any other, so
+a token is not a password to share: `bin/bfwp-device.sh release <deviceId>` is how
+an operator hands one to a replacement handset. That is also what makes the phone's
+device id (which it generates itself, and which no settings field carries) a name
+rather than a secret.
 
 The client ships pointing at the project's own hosted server, so the address
 field already has something in it: **replace it with yours** in step 4 (or leave
@@ -132,11 +143,12 @@ re-implementation is checked against.
 npm test
 ```
 
-155 tests, no network, no Chromium, no Docker. They cover the wire format, the
+190 tests, no network, no Chromium, no Docker. They cover the wire format, the
 key schedule against the RFC 5869 vectors, sealing against tampering, replay and
-reordering, the device registry, the configuration refusals, the log scrubber,
-the session state machine, and -- with real sockets -- the listener, the TLS 1.3
-configuration and the frame backpressure.
+reordering, the device registry and the rule that a token belongs to one device,
+the registration page and its bot check, the configuration refusals, the log
+scrubber, the session state machine, and -- with real sockets -- the listener, the
+TLS 1.3 configuration, the frame backpressure and the page itself.
 
 Three things are deliberately NOT tested here, and `docs/DEPLOY.md` says how to
 exercise each by hand: the Chromium paths (they need a browser), the audio
@@ -149,6 +161,20 @@ Chromium, taps a text field and checks the answer. It says `10/10` on a working
 server, and it is the only thing in here that has ever spoken to one.
 
 ## Honest limits
+
+- **The registration page's bot check is a speed bump, and it is called one.** A
+  signed, single-use, expiring challenge, a honeypot field, a minimum time on the
+  form and a per-address hourly limit stop a script that fills forms. They do not
+  stop somebody solving an arithmetic question by hand, and they are not sold as
+  if they did. What actually protects the page is that it listens on loopback by
+  default and refuses to be reachable from the network without an access code
+  (`src/config.js`), and publishing it is therefore a decision an operator makes
+  twice rather than an accident.
+- **A token belongs to one device and cannot be moved by a client.** The binding is
+  enforced by the server, not by the phone, so an old build of the client cannot
+  sidestep it; the only way a token moves is an operator running
+  `bfwp-device release`. A phone that replaces another is a `release` away, and a
+  stolen token is useless while its owner is using it.
 
 - **The handset has never spoken to a deployment.** The server has: it runs on a
   1 GB `e2-micro` with a publicly trusted certificate for its own address and

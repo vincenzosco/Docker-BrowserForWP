@@ -7,6 +7,13 @@
 
 import path from 'node:path';
 
+/**
+ * Addresses that only this machine can reach. `localhost` is included because a
+ * deployment may well write it, and treating it as public would refuse to start a
+ * server that is in fact unreachable from anywhere else.
+ */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+
 export const DEFAULTS = Object.freeze({
   host: '0.0.0.0',
   port: 8443,
@@ -23,6 +30,11 @@ export const DEFAULTS = Object.freeze({
   maxSessions: 16,
   maxTilesPerFrame: 16,
   pageTimeoutMs: 30000,
+  registerHost: '127.0.0.1',
+  // 8444 is the audio endpoint (BFWP_PORT + 1), which is why this is not 8444.
+  registerPort: 8445,
+  registerSecret: '',
+  registerPerHour: 3,
   viewportWidth: 480,
   viewportHeight: 800,
   devicePixelRatio: 2,
@@ -104,6 +116,14 @@ export function loadConfig(env = process.env) {
     maxSessions: intFrom(env, 'BFWP_MAX_SESSIONS', DEFAULTS.maxSessions, { min: 1, max: 512 }),
     maxTilesPerFrame: intFrom(env, 'BFWP_MAX_TILES', DEFAULTS.maxTilesPerFrame, { min: 1, max: 256 }),
     pageTimeoutMs: intFrom(env, 'BFWP_PAGE_TIMEOUT_MS', DEFAULTS.pageTimeoutMs, { min: 1000, max: 300000 }),
+    registerHost: stringFrom(env, 'BFWP_REGISTER_HOST', DEFAULTS.registerHost),
+    // 0 means "let the operating system choose", which is only useful to a test
+    // that starts the page on an ephemeral port and reads the url back.
+    registerPort: intFrom(env, 'BFWP_REGISTER_PORT', DEFAULTS.registerPort, { min: 0, max: 65535 }),
+    registerSecret: stringFrom(env, 'BFWP_REGISTER_SECRET', DEFAULTS.registerSecret),
+    // 0 turns the rate limit off, for a deployment that would rather accept any
+    // number of registrations than ever refuse a legitimate one.
+    registerPerHour: intFrom(env, 'BFWP_REGISTER_PER_HOUR', DEFAULTS.registerPerHour, { min: 0, max: 100 }),
     viewportWidth: intFrom(env, 'BFWP_VIEWPORT_WIDTH', DEFAULTS.viewportWidth, { min: 160, max: 4096 }),
     viewportHeight: intFrom(env, 'BFWP_VIEWPORT_HEIGHT', DEFAULTS.viewportHeight, { min: 160, max: 4096 }),
     devicePixelRatio: intFrom(env, 'BFWP_DEVICE_PIXEL_RATIO', DEFAULTS.devicePixelRatio, { min: 1, max: 4 }),
@@ -116,6 +136,31 @@ export function loadConfig(env = process.env) {
 
   if (!['debug', 'info', 'warn', 'error', 'silent'].includes(config.logLevel)) {
     throw new ConfigError(`BFWP_LOG_LEVEL must be debug, info, warn, error or silent, got ${config.logLevel}`);
+  }
+
+  // Two refusals, and both are the point of the feature rather than a formality.
+  //
+  // The port must not collide with the two listeners that already exist, because
+  // the failure would be `EADDRINUSE` at startup with a message that names a port
+  // nobody typed.
+  if (config.registerPort === config.port || config.registerPort === config.port + 1) {
+    throw new ConfigError(`BFWP_REGISTER_PORT must differ from BFWP_PORT (${config.port})`
+      + ` and from the audio port (${config.port + 1}), got ${config.registerPort}`);
+  }
+
+  // AND THE ONE THAT MATTERS. This page mints credentials: anybody who can reach
+  // it and pass a challenge can hold a token for a channel that carries every page
+  // they read. So the default is that only this machine can reach it, and a
+  // deployment that publishes it has to say so twice -- a non-loopback address AND
+  // a secret long enough to not be guessed. `BFWP_REGISTER_HOST=0.0.0.0` on its own
+  // is refused rather than honoured, because honouring it is how a token dispenser
+  // ends up on the open internet with nobody having decided that it should.
+  config.registerIsLoopback = LOOPBACK_HOSTS.has(config.registerHost);
+  if (!config.registerIsLoopback && config.registerSecret.length < 16) {
+    throw new ConfigError('BFWP_REGISTER_HOST is not a loopback address, so the registration'
+      + ' page would be reachable from the network: set BFWP_REGISTER_SECRET (at least 16'
+      + ' characters), or leave BFWP_REGISTER_HOST at 127.0.0.1 and reach the page through'
+      + ' an SSH tunnel. A page that mints credentials must not be open to whoever finds it.');
   }
 
   return Object.freeze(config);

@@ -19,6 +19,16 @@ services:
       - "${BFWP_BIND_IP:-0.0.0.0}:8443:8443"
       # Uncomment together with BFWP_AUDIO_ENABLED=1 below.
       # - "${BFWP_BIND_IP:-0.0.0.0}:8444:8444"
+      #
+      # The registration page is NOT published here, and that is the default this
+      # feature is built around: it listens on the container's loopback, so the
+      # operator reaches it through an SSH tunnel (`ssh -L 8445:127.0.0.1:8445`)
+      # and nobody else can. Publishing it takes two decisions, not one -- the
+      # line below AND BFWP_REGISTER_HOST=0.0.0.0 AND BFWP_REGISTER_SECRET, because
+      # src/config.js refuses a network-reachable page with no access code. A page
+      # that mints credentials must not be one mistyped variable away.
+      #
+      # - "${BFWP_BIND_IP:-0.0.0.0}:8445:8445"
     environment:
       BFWP_PORT: "8443"
       BFWP_PUBLIC_URL: "${BFWP_PUBLIC_URL:?set BFWP_PUBLIC_URL to the https url phones use}"
@@ -33,6 +43,12 @@ services:
       # be fed by the PulseAudio capture described in docs/DEPLOY.md.
       BFWP_AUDIO_ENABLED: "${BFWP_AUDIO_ENABLED:-0}"
       BFWP_AUDIO_FIFO: /run/bfwp/audio.mp3
+      # The page where a phone's owner asks for a token. Loopback by default;
+      # see the ports block above for what publishing it costs.
+      BFWP_REGISTER_PORT: "${BFWP_REGISTER_PORT:-8445}"
+      BFWP_REGISTER_HOST: "${BFWP_REGISTER_HOST:-127.0.0.1}"
+      BFWP_REGISTER_SECRET: "${BFWP_REGISTER_SECRET:-}"
+      BFWP_REGISTER_PER_HOUR: "${BFWP_REGISTER_PER_HOUR:-3}"
     volumes:
       - ./tls:/etc/bfwp/tls:ro
       - devices:/var/lib/bfwp

@@ -89,6 +89,13 @@ export const ErrorCode = Object.freeze({
   PROTOCOL: 5,
   BUSY: 6,
   SERVER: 7,
+  /**
+   * The token is real, enabled, and already claimed by a different device id. A
+   * token belongs to one device; this is the refusal that makes that true. See
+   * the binding rule in src/devices.js, and `bfwp-device release` for the one way
+   * a token moves on purpose.
+   */
+  TOKEN_BOUND: 8,
 });
 
 export const LoadState = Object.freeze({

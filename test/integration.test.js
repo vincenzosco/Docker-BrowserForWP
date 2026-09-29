@@ -207,19 +207,29 @@ test('a real socket handshake produces a HELLO_ACK', async () => {
   });
 });
 
-test('a device the registry does not know is refused over a real socket', async () => {
-  await withServer({ BFWP_ALLOW_INSECURE: '1' }, async ({ port, token }) => {
-    const client = await connect(port);
+test('a token already claimed by another device is refused over a real socket', async () => {
+  await withServer({ BFWP_ALLOW_INSECURE: '1' }, async ({ port, device, token }) => {
+    const first = await connect(port);
     try {
-      client.sendFrame(Type.HELLO, 0, hello('99999999-9999-9999-9999-999999999999', token));
-      assert.ok(await waitFor(() => client.frames.length > 0));
+      first.sendFrame(Type.HELLO, 0, hello(device.deviceId, token));
+      assert.ok(await waitFor(() => first.frames.length > 0));
+      assert.equal(messages.decodeHelloAck(first.frames[0].payload).ok, true,
+        'the first device claims the token');
 
-      const ack = messages.decodeHelloAck(client.frames[0].payload);
-      assert.equal(ack.ok, false);
-      assert.equal(ack.code, ErrorCode.UNKNOWN_DEVICE);
-      assert.ok(await waitFor(() => client.closed), 'a refused connection should be closed');
+      const other = await connect(port);
+      try {
+        other.sendFrame(Type.HELLO, 0, hello('99999999-9999-9999-9999-999999999999', token));
+        assert.ok(await waitFor(() => other.frames.length > 0));
+
+        const ack = messages.decodeHelloAck(other.frames[0].payload);
+        assert.equal(ack.ok, false);
+        assert.equal(ack.code, ErrorCode.TOKEN_BOUND);
+        assert.ok(await waitFor(() => other.closed), 'a refused connection should be closed');
+      } finally {
+        other.close();
+      }
     } finally {
-      client.close();
+      first.close();
     }
   });
 });

@@ -21,6 +21,7 @@ import { DeviceStore } from '../src/devices.js';
 import { createPlaywrightBrowserFactory } from '../src/browser.js';
 import { createRenderServer } from '../src/server.js';
 import { AudioRegistry, createAudioHandler } from '../src/audio.js';
+import { createRegistrationServer } from '../src/register.js';
 
 async function main() {
   let config;
@@ -47,6 +48,8 @@ async function main() {
     log.warn(`no devices are registered in ${config.devicesFile}. Nobody can connect until you run:`);
     log.warn('  docker compose exec render bin/bfwp-device.sh add "my phone"');
     log.warn('  (or `npm run device -- add` outside a container, where you already are the right user)');
+    log.warn('  ...or ask for one on the registration page, whose address the next line names,');
+    log.warn('  which is the route for anybody who does not have a shell on this machine');
   } else {
     log.info(`device registry: ${store.size} device(s)`);
   }
@@ -88,6 +91,21 @@ async function main() {
     log.info('audio is off; a page cannot be heard through this server');
   }
 
+  // The registration page. It exists because minting a token used to require a
+  // shell on this server, and the people who need one are the people holding the
+  // phones. src/config.js is what keeps it from being a token dispenser on the
+  // open internet: loopback by default, and a non-loopback address without a
+  // secret is refused before this line is reached.
+  const registration = createRegistrationServer({ config, store, log });
+  try {
+    registration.start();
+  } catch (error) {
+    log.error(`the registration page could not listen: ${error.message}`);
+    log.error('set BFWP_REGISTER_HOST/BFWP_REGISTER_PORT, or fix the certificate it reads');
+    process.exit(1);
+    return;
+  }
+
   try {
     server.start();
   } catch (error) {
@@ -102,6 +120,7 @@ async function main() {
     stopping = true;
     log.info(`${signal} received, shutting down`);
     if (audioServer) await new Promise((resolve) => audioServer.close(resolve));
+    await registration.stop();
     await server.stop();
     log.info('stopped');
     process.exit(0);
