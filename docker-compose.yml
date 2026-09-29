@@ -20,15 +20,20 @@ services:
       # Uncomment together with BFWP_AUDIO_ENABLED=1 below.
       # - "${BFWP_BIND_IP:-0.0.0.0}:8444:8444"
       #
-      # The registration page is NOT published here, and that is the default this
-      # feature is built around: it listens on the container's loopback, so the
-      # operator reaches it through an SSH tunnel (`ssh -L 8445:127.0.0.1:8445`)
-      # and nobody else can. Publishing it takes two decisions, not one -- the
-      # line below AND BFWP_REGISTER_HOST=0.0.0.0 AND BFWP_REGISTER_SECRET, because
-      # src/config.js refuses a network-reachable page with no access code. A page
-      # that mints credentials must not be one mistyped variable away.
+      # The registration page, on the HOST'S LOOPBACK by default: the operator
+      # reaches it through an SSH tunnel and nothing on the network can.
       #
-      # - "${BFWP_BIND_IP:-0.0.0.0}:8445:8445"
+      # It is PUBLISHED rather than left private because the listener runs inside
+      # the container, and Docker forwards a published port to the container's own
+      # address -- a page bound to the container's loopback would be reachable from
+      # nowhere at all, and the tunnel above would hit a closed port. That is also
+      # why BFWP_REGISTER_HOST below is 0.0.0.0, and therefore why the access code
+      # is required rather than optional here.
+      #
+      # To let people reach it themselves, set BFWP_REGISTER_BIND_IP=0.0.0.0 (and
+      # open the port in the host's firewall). The access code is what makes that
+      # decision reversible: it is already required, and it still is.
+      - "${BFWP_REGISTER_BIND_IP:-127.0.0.1}:8445:8445"
     environment:
       BFWP_PORT: "8443"
       BFWP_PUBLIC_URL: "${BFWP_PUBLIC_URL:?set BFWP_PUBLIC_URL to the https url phones use}"
@@ -43,11 +48,16 @@ services:
       # be fed by the PulseAudio capture described in docs/DEPLOY.md.
       BFWP_AUDIO_ENABLED: "${BFWP_AUDIO_ENABLED:-0}"
       BFWP_AUDIO_FIFO: /run/bfwp/audio.mp3
-      # The page where a phone's owner asks for a token. Loopback by default;
-      # see the ports block above for what publishing it costs.
+      # The page where a phone's owner asks for a token. 0.0.0.0 INSIDE the
+      # container, because that is the only address a published port can reach;
+      # what limits who gets there is the host-side publish above. src/config.js
+      # refuses a non-loopback bind with no access code, so the code is required
+      # here -- which is the whole point rather than a formality: the difference
+      # between a private page and a public one is then one variable, and the code
+      # is what makes that variable safe to change.
       BFWP_REGISTER_PORT: "${BFWP_REGISTER_PORT:-8445}"
-      BFWP_REGISTER_HOST: "${BFWP_REGISTER_HOST:-127.0.0.1}"
-      BFWP_REGISTER_SECRET: "${BFWP_REGISTER_SECRET:-}"
+      BFWP_REGISTER_HOST: "${BFWP_REGISTER_HOST:-0.0.0.0}"
+      BFWP_REGISTER_SECRET: "${BFWP_REGISTER_SECRET:?set BFWP_REGISTER_SECRET to an access code of 16 or more characters for the registration page}"
       BFWP_REGISTER_PER_HOUR: "${BFWP_REGISTER_PER_HOUR:-3}"
     volumes:
       - ./tls:/etc/bfwp/tls:ro

@@ -76,6 +76,7 @@ cp /etc/letsencrypt/live/render.example.com/privkey.pem tls/
 
 # 2. Configure and start.
 export BFWP_PUBLIC_URL=https://render.example.com:8443
+export BFWP_REGISTER_SECRET="$(head -c 24 /dev/urandom | base64 | tr -d '/+=')"
 docker compose up -d --build
 
 # 3. Register the phone and copy the token it prints. It is shown ONCE.
@@ -83,10 +84,12 @@ docker compose up -d --build
 #    registry written as root is one the server (as pwuser) cannot then read.
 docker compose exec render bin/bfwp-device.sh add "my phone"
 
-#    ...or let people ask for one themselves on the registration page, which
-#    listens on the container's loopback by default: `ssh -L 8445:127.0.0.1:8445`
-#    and open http://127.0.0.1:8445/. Publishing it needs an access code, and the
-#    server refuses to start without one -- see docs/DEPLOY.md.
+#    ...or let people ask for one themselves on the registration page. It is
+#    published on the HOST'S LOOPBACK, so from your own machine:
+#      gcloud compute ssh <host> -- -N -L 8445:127.0.0.1:8445
+#      open http://127.0.0.1:8445/?k=$BFWP_REGISTER_SECRET
+#    Set BFWP_REGISTER_BIND_IP=0.0.0.0 to open it to the network -- the access
+#    code above is what gates it either way. See docs/DEPLOY.md.
 
 # 4. On the phone: Settings → Server, with this server's url in *Server address*
 #    and the token in *Device token*, then Settings → Rendering engine → Server

@@ -346,7 +346,11 @@ operator if you ever need the token revoked:
       const bound = server.address();
       const port = bound && typeof bound === 'object' ? bound.port : config.registerPort;
       log.info(`registration page on ${scheme}://${hostForUrl()}:${port} `
-        + `(${config.registerIsLoopback ? 'loopback only' : 'reachable from the network, access code required'}), `
+        // A statement about the BIND, not about reachability: in a container this
+        // address is the only one a published port can reach, and what limits who
+        // gets here is the publish (see docker-compose.yml). Claiming more than
+        // the bind would be this line guessing about a network it cannot see.
+        + `(${config.registerIsLoopback ? 'loopback only' : 'bound on every interface, access code required'}), `
         + `${config.registerPerHour > 0 ? `${config.registerPerHour} per address per hour` : 'no rate limit'}`);
       if (config.registerIsLoopback) {
         log.info('the registration page is loopback only: reach it with an SSH tunnel, e.g.'

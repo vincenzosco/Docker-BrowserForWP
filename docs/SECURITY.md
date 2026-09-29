@@ -91,6 +91,13 @@ protect, and it has no accounts, no passwords and no reset flow to get wrong.
   address is REFUSED unless `BFWP_REGISTER_SECRET` is also set, because a page
   that mints credentials must not be one mistyped variable away from the open
   internet. With a secret set, every request needs it: the page and the form.
+- **In Docker the interesting case is inverted, and the compose file says so.**
+  The container binds `0.0.0.0`, because a published port is forwarded to the
+  container's address and never to its loopback -- a page bound to `127.0.0.1`
+  inside a container is reachable from nowhere. What limits who gets there is the
+  host-side publish, which ships as `127.0.0.1:8445:8445`; `BFWP_REGISTER_BIND_IP`
+  opens it, and the access code that the non-loopback bind makes mandatory is what
+  keeps that one-variable change from being an incident.
 - **The bot check is a signed, single-use, expiring challenge** (an arithmetic
   question whose answer is in an HMAC'd envelope), a honeypot field, a minimum
   time on the form, and a per-address hourly limit. It stops a script that fills

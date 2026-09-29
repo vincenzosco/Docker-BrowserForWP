@@ -225,45 +225,58 @@ the people holding the phones. So the server also serves a page, on
 a token once -- the same single-use digest the CLI mints, with no account, no
 password and no reset flow.
 
-**By default it listens on the container's loopback and is not published**, so the
-operator reaches it through a tunnel:
+**In Docker it is published on the HOST'S LOOPBACK** -- `127.0.0.1:8445:8445` in
+the compose file, which is what makes a tunnel work rather than a port on the
+network:
 
 ```bash
 # from the machine you are sitting at
 gcloud compute ssh docker1 -- -N -L 8445:127.0.0.1:8445
-# then open http://127.0.0.1:8445/
+# then open http://127.0.0.1:8445/?k=<the access code>
 ```
 
-The server logs the tunnel command it expects at startup, so it is not necessary
-to remember this:
+**The access code is required, and the reason is a Docker detail worth knowing.**
+A published port is forwarded to the container's own address, never to the
+container's loopback, so a page bound to `127.0.0.1` inside the container would be
+reachable from nowhere at all. The container therefore binds `0.0.0.0`
+(`BFWP_REGISTER_HOST` in the compose file), and `src/config.js` refuses that
+without a code -- which is the rule doing its job rather than a nuisance: what
+limits who reaches the page is the publish above, and the code is what makes
+changing that publish a safe edit instead of an incident.
 
-```
-INFO registration page on http://127.0.0.1:8445 (loopback only), 3 per address per hour
-INFO the registration page is loopback only: reach it with an SSH tunnel, e.g. ssh -L 8445:127.0.0.1:8445 the-server
-```
-
-**To let people reach it themselves**, two things have to be set, and the second is
-enforced rather than documented:
+Set it once, in `.env`:
 
 ```bash
-# .env
-BFWP_REGISTER_HOST=0.0.0.0
-BFWP_REGISTER_SECRET=<at least 16 characters>
+BFWP_REGISTER_SECRET="$(head -c 24 /dev/urandom | base64 | tr -d '/+=')"
 ```
 
-...plus the `8445:8445` line in `docker-compose.yml`, which ships commented out
-next to the audio one. Without the secret the server **refuses to start** when the
-host is not a loopback address: a page that mints credentials must not be one
-mistyped variable away from being open to whoever finds the port. With a secret
-set, every request must carry it -- the operator shares it with the people who
-should have a token, and the link is `https://host:8445/?k=<the secret>`.
+What the container logs then says what it is bound to and nothing more, because a
+process inside a container cannot see how its port was published:
+
+```
+INFO registration page on http://0.0.0.0:8445 (bound on every interface, access code required), 3 per address per hour
+```
+
+Every request must then carry it, and the operator shares the link
+(`https://host:8445/?k=<the code>`) with the people who should have a token.
+
+**To let people reach it themselves**, one more variable:
+
+```bash
+BFWP_REGISTER_BIND_IP=0.0.0.0        # .env, plus the port in the host's firewall
+```
+
+and the page is on the internet behind its access code, its bot check and its
+per-address limit. What is NOT recommended is removing the code at the same time:
+the code is cheap, and the page mints credentials.
 
 The form is behind a bot check: an arithmetic question whose answer is inside a
 signed, single-use, expiring envelope, a field a person never fills, a minimum
 time on the form, and `BFWP_REGISTER_PER_HOUR` registrations per address per hour
 (`3` by default; `0` disables the limit). That stops a script that fills forms. It
 does not stop a person solving the question by hand, and nothing here pretends it
-does -- the gate that matters is the loopback default, or the secret.
+does -- the gate that matters is the publish above (and, outside Docker, the
+loopback default), together with the access code.
 
 ### A token belongs to one phone
 
@@ -381,6 +394,11 @@ behaving strangely later.
 | `BFWP_TLS_CERT` / `BFWP_TLS_KEY` | `/etc/bfwp/tls/...` | PEM paths. |
 | `BFWP_DEVICES_FILE` | `/var/lib/bfwp/devices.json` | The registry. |
 | `BFWP_MAX_SESSIONS` | `16` | Connected devices at once. This is your memory ceiling. |
+| `BFWP_REGISTER_HOST` | `127.0.0.1` | Bind address of the registration page. Beyond loopback it requires `BFWP_REGISTER_SECRET`, and the compose file sets `0.0.0.0` because a published port cannot reach a container's loopback. |
+| `BFWP_REGISTER_PORT` | `8445` | Where the page listens. Must differ from `BFWP_PORT` and `BFWP_PORT + 1` (the audio port). |
+| `BFWP_REGISTER_SECRET` | empty | The access code for the page, 16 characters or more. Required whenever the bind address is not loopback. |
+| `BFWP_REGISTER_PER_HOUR` | `3` | Registrations per address per hour. `0` turns the limit off. |
+| `BFWP_REGISTER_BIND_IP` | `127.0.0.1` | **Compose only**, not read by the server: the host address the page's port is published on. `0.0.0.0` puts it on the network. |
 | `BFWP_FRAME_QUALITY` | `60` | JPEG quality, 1..95. |
 | `BFWP_MAX_FRAME_BYTES` | `2097152` | Refuse a larger frame before allocating. |
 | `BFWP_SESSION_IDLE_MS` | `120000` | Hang up on a device that has gone quiet. |
