@@ -1,0 +1,24 @@
+{
+  "name": "docker-browserforwp",
+  "version": "0.1.0",
+  "private": false,
+  "description": "The render server for BrowserForWP: a headless Chromium that draws pages and streams them to Windows Phone 8.1, which has no modern engine of its own.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "bin": {
+    "bfwp-render": "bin/bfwp-render.js",
+    "bfwp-device": "bin/bfwp-device.js"
+  },
+  "scripts": {
+    "start": "node bin/bfwp-render.js",
+    "device": "node bin/bfwp-device.js",
+    "gen-vectors": "node bin/gen-vectors.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "playwright": ">=1.40 <2"
+  }
+}

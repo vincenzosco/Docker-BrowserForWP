@@ -1,0 +1,22 @@
+node_modules/
+npm-debug.log*
+*.log
+
+# A real registry belongs to a deployment, never to a checkout. It holds the
+# digests of every device token, and committing one would publish the shape of
+# somebody's devices.
+devices.json
+data/
+var/
+
+# Certificates and private keys are read-only mounts. Nothing in this repository
+# should ever contain one.
+tls/
+*.pem
+*.key
+*.pfx
+
+.env
+.env.*
+
+.DS_Store

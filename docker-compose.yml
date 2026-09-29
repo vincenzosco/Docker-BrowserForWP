@@ -1,0 +1,63 @@
+# A working deployment, with the two things that are easy to get wrong done
+# properly: where the registry lives, and where the certificate comes from.
+#
+# The certificate is mounted read-only from ./tls and must be a real one. The
+# phone validates the chain and the name before it sends a byte, so a self-signed
+# certificate is not a shortcut -- it is a wall. See docs/DEPLOY.md.
+
+services:
+  render:
+    build:
+      context: .
+      args:
+        # Keep in step with the `playwright` range in package.json.
+        PLAYWRIGHT_TAG: ${PLAYWRIGHT_TAG:-v1.49.1-jammy}
+        WITH_AUDIO: ${WITH_AUDIO:-0}
+    image: browserforwp-render:dev
+    restart: unless-stopped
+    ports:
+      - "${BFWP_BIND_IP:-0.0.0.0}:8443:8443"
+      # Uncomment together with BFWP_AUDIO_ENABLED=1 below.
+      # - "${BFWP_BIND_IP:-0.0.0.0}:8444:8444"
+    environment:
+      BFWP_PORT: "8443"
+      BFWP_PUBLIC_URL: "${BFWP_PUBLIC_URL:?set BFWP_PUBLIC_URL to the https url phones use}"
+      BFWP_SERVER_NAME: "${BFWP_SERVER_NAME:-BrowserForWP render server}"
+      BFWP_DEVICES_FILE: /var/lib/bfwp/devices.json
+      BFWP_TLS_CERT: /etc/bfwp/tls/fullchain.pem
+      BFWP_TLS_KEY: /etc/bfwp/tls/privkey.pem
+      BFWP_LOG_LEVEL: "${BFWP_LOG_LEVEL:-info}"
+      BFWP_MAX_SESSIONS: "${BFWP_MAX_SESSIONS:-16}"
+      BFWP_FRAME_QUALITY: "${BFWP_FRAME_QUALITY:-60}"
+      # Audio is off by default and needs WITH_AUDIO=1 as well; the FIFO has to
+      # be fed by the PulseAudio capture described in docs/DEPLOY.md.
+      BFWP_AUDIO_ENABLED: "${BFWP_AUDIO_ENABLED:-0}"
+      BFWP_AUDIO_FIFO: /run/bfwp/audio.mp3
+    volumes:
+      - ./tls:/etc/bfwp/tls:ro
+      - devices:/var/lib/bfwp
+      - audio:/run/bfwp
+    # The process draws pages for strangers. It should hold nothing it does not
+    # need, and it should not be able to write to its own code.
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+      - /run/bfwp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Chromium in a container needs more than the default 64 MB of /dev/shm, and
+    # running out of it is the classic "the browser dies for no reason".
+    shm_size: 1gb
+    # A remote-rendering server holds a page's session state in memory. This
+    # number is the ceiling on how much of the host one fleet of phones can
+    # occupy, and it should be raised only with the host's memory.
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+volumes:
+  devices:
+  audio:

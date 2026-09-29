@@ -1,0 +1,29 @@
+# The image needs package.json, protocol/, src/ and bin/ and nothing else.
+.git
+.gitignore
+node_modules
+npm-debug.log*
+
+# Tests are not shipped: they need no Chromium, and running them in production
+# would mean shipping a test runner into a container that draws pages for
+# strangers.
+test/
+
+# Docs stay in the repository rather than in the layer.
+docs/
+*.md
+LICENSE
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# A registry is a deployment's, not an image's.
+devices.json
+data/
+var/
+tls/
+*.pem
+*.key
+.env
+.env.*
+.DS_Store
