@@ -122,7 +122,7 @@ re-implementation is checked against.
 npm test
 ```
 
-148 tests, no network, no Chromium, no Docker. They cover the wire format, the
+155 tests, no network, no Chromium, no Docker. They cover the wire format, the
 key schedule against the RFC 5869 vectors, sealing against tampering, replay and
 reordering, the device registry, the configuration refusals, the log scrubber,
 the session state machine, and -- with real sockets -- the listener, the TLS 1.3
@@ -133,8 +133,23 @@ exercise each by hand: the Chromium paths (they need a browser), the audio
 capture (it needs a virtual sound device), and the container image (it needs
 Docker). This repository was written on a machine with none of the three.
 
+`bin/bfwp-smoke.js` is what covers the first and the third instead: a real client
+that dials a real deployment, completes TLS 1.3, navigates, receives a JPEG from
+Chromium, taps a text field and checks the answer. It says `10/10` on a working
+server, and it is the only thing in here that has ever spoken to one.
+
 ## Honest limits
 
+- **The handset has never spoken to a deployment.** The server has: it runs on a
+  1 GB `e2-micro`, and `bin/bfwp-smoke.js` completes a full session against it --
+  TLS 1.3, a real frame, and a tap that reports where the page's focus is. What
+  that run needs from you is a certificate from a real CA for a name the phone can
+  validate, and port 8443 open; until then the client's whole device-side half
+  (the picture, the soft keyboard, the audio element) is still unrun. See
+  `docs/DEPLOY.md` and the verification table in the client repository.
+- **One page held 231 MiB peak** in its container, measured on that host. The
+  compose default of 16 sessions assumes 2.5 GB and up; on a small machine set
+  `BFWP_MAX_SESSIONS` to what the box can actually hold.
 - **Audio is the least finished part.** Headless Chromium has no audio device,
   so "the phone hears the sound" needs PulseAudio and ffmpeg inside the image and
   a capture FIFO. The delivery half is built and tested; the capture half is a

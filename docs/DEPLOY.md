@@ -9,7 +9,20 @@
 - **A domain and a certificate from a real CA.** The phone validates the chain
   and the host name before it sends a byte, so a self-signed certificate is not a
   shortcut to test with -- it is a wall. `certbot certonly --standalone -d
-  render.example.com`, then copy `fullchain.pem` and `privkey.pem` into `tls/`.
+  render.example.com`, then copy `fullchain.pem` and `privkey.pem` into `tls/`,
+  **and make them readable by the container's user**:
+
+  ```bash
+  sudo chown 1000:1000 tls/fullchain.pem tls/privkey.pem
+  sudo chmod 600 tls/privkey.pem
+  sudo chmod 644 tls/fullchain.pem
+  ```
+
+  The container runs as `pwuser`, uid 1000, and a bind mount keeps the HOST's
+  numeric owner: certbot writes the key `0600` for `root`, so without this the
+  server starts, logs `could not listen: EACCES: permission denied, open
+  '/etc/bfwp/tls/privkey.pem'` and restarts forever. 0600 is kept on purpose --
+  the key has to be readable by uid 1000, not by everybody.
 - **Open port 8443** (and 8444 if you enable audio) inbound.
 - **Docker with the compose plugin.**
 
@@ -17,7 +30,7 @@
 
 | Argument | Default | Notes |
 | --- | --- | --- |
-| `PLAYWRIGHT_TAG` | `v1.49.1-jammy` | Must match the `playwright` range in `package.json`. See below. |
+| `PLAYWRIGHT_TAG` | `v1.49.1-jammy` | Must match `playwright` in `package.json`, which is pinned to an exact version. The build checks the pair and REFUSES to produce the image if they differ. |
 | `WITH_AUDIO` | `0` | Adds ffmpeg and PulseAudio, roughly doubling the image. |
 
 Checking the tag against the package: the base image ships the browsers, and the
@@ -27,7 +40,20 @@ Checking the tag against the package: the base image ships the browsers, and the
 docker run --rm mcr.microsoft.com/playwright:v1.49.1-jammy npx playwright --version
 ```
 
-and make sure the printed version satisfies the range in `package.json`.
+and make sure the printed version is the version in `package.json`.
+
+You no longer have to remember this: the build installs the package, reads the
+version back and fails when it does not equal the tag, because the failure it
+prevents is invisible at build time and specific in production. An open range
+("any 1.x") once resolved to a version years ahead of the tag, and the server
+built, started, accepted a device, sealed frames -- and then could not launch a
+browser at all:
+
+```
+ERROR could not start a browser session: browserType.launch: Executable doesn't
+  exist at /ms-playwright/chromium_headless_shell-1243/chrome-headless-shell
+Looks like Playwright was just updated to 1.63.0. Please update docker image as well.
+```
 
 ## First deployment
 
@@ -69,8 +95,80 @@ docker compose exec render node bin/bfwp-device.js remove  <deviceId>
 `disable` is the one to reach for when a phone is lost: it refuses the device
 without forgetting it, so it can be brought back if it turns up.
 
+The server re-reads the registry whenever the file changes, so **no restart is
+needed** after `add`, `disable`, `enable` or `remove` -- it logs `device registry
+reloaded: 2 device(s)` when it notices. That is not only a convenience: a `disable`
+the running server could not see would be a lost phone that still connects.
+
 Back up the `devices` volume. Losing it means re-registering every phone, and a
 device that is in nobody's registry is a device nobody can revoke.
+
+## Verifying a deployment
+
+`bin/bfwp-smoke.js` is a client. It is the only thing in this repository that
+exercises the whole path against a live server -- TLS 1.3, the handshake, the
+sealed frames, a real page drawn by a real Chromium, a tap that reaches it and the
+answer that comes back:
+
+```bash
+docker compose exec render node bin/bfwp-smoke.js \
+  --host 127.0.0.1 --port 8443 \
+  --device <device id> --token <token> \
+  --focus-url http://<host-address>:8080/
+```
+
+From another machine it takes `--host` and `--port` of the server, and it does not
+validate the certificate unless you pass `--verify` -- the phone is the client that
+validates, and being able to diagnose a server behind a self-signed certificate is
+worth more than the check.
+
+Ten checks. Nine of them pass or fail on their own; the tenth is silence.
+
+`--focus-url` needs a page whose layout is known, because a tap is a pair of
+coordinates and a public homepage is a guess. Serve this and the coordinates in the
+tool's header are the ones to use:
+
+```bash
+mkdir -p /tmp/bfwp-testpage && cat > /tmp/bfwp-testpage/index.html <<'HTML'
+<!doctype html>
+<html><head><meta charset="utf-8"><title>bfwp smoke</title></head>
+<body style="margin:0;font:16px sans-serif">
+  <input id="name" type="text" style="position:absolute;left:20px;top:20px;width:200px;height:40px">
+  <button id="go" type="button" style="position:absolute;left:20px;top:80px;width:200px;height:40px">Not a text field</button>
+  <p style="position:absolute;left:20px;top:140px;width:300px">plain text</p>
+</body></html>
+HTML
+(cd /tmp/bfwp-testpage && python3 -m http.server 8080)
+```
+
+Chromium runs inside the container, so the address has to be one the CONTAINER can
+reach: the host's own address, not `127.0.0.1`. Without `--focus-url` the four
+FOCUS checks report SKIPPED, never passed.
+
+A run of a working deployment ends like this:
+
+```
+  ✓ the server accepts this device — docker1, audio off
+  ✓ a sealed NAVIGATE produces a FRAME — landed on https://example.com/, 1 tile(s), 480x800, 2533 bytes
+  ✓ the frame is a JPEG
+  ✓ the ACK releases the next frame — seq 8
+  ✓ the focus page draws — http://10.128.0.3:8080/
+  ✓ the page's own focus on load is reported — editable=false
+  ✓ a tap on a text field reports an editable focus — editable=true
+  ✓ typing changes the page — a new frame, seq 18
+  ✓ Tab moves the answer with the focus — editable=false
+  ✓ an unchanged answer stays quiet — nothing for 2.5 s, as the protocol promises
+
+10/10 checks passed.
+```
+
+The tool's own first two versions reported a HEALTHY server as broken: once because
+it acknowledged a frame and then treated the next one as unacknowledged, so the
+screencast stayed stopped and it waited for a picture it had already been sent; once
+because it took any frame as proof that the page it had asked for was in front, and
+then tapped the page it was leaving. Both mistakes are written into the file. A
+verification tool that lies in the pessimistic direction wastes as much of an
+afternoon as one that lies in the optimistic one.
 
 ## Configuration
 
@@ -157,6 +255,12 @@ You can, and if you do, know two things:
 | 4-8 | 1.5 GB | Raise `shm_size` with it. |
 | 16 | 2.5 GB+ | The compose default; raise the memory limit too, or lower `BFWP_MAX_SESSIONS`. |
 
+**Measured, not estimated:** one live session with a page in it held the container
+at **231 MiB peak** on a 953 MB `e2-micro`, which is 2-3 devices and not the 16 the
+default allows. Lower `BFWP_MAX_SESSIONS` to match the host rather than the
+aspiration -- a server that accepts a session it cannot hold fails at the browser
+launch, which the phone sees as a page that never arrives.
+
 Scaling out means more instances behind a TCP-aware load balancer, with the
 registry shared or duplicated by hand. The protocol is one connection per device
 for its whole life, so there is no per-request affinity to arrange -- but a
@@ -186,4 +290,6 @@ page when it does.
 | Code 6 | `BFWP_MAX_SESSIONS` is reached. Check for devices holding idle sessions. |
 | The screen goes black after the first frame | A frame was never acknowledged, so the tap stayed stopped. The client must `ACK`. |
 | Chromium dies with no error | `shm_size` is too small. 1 GB, not the 64 MB default. |
-| `Could not start a browser session` | Playwright was installed without a browser, or the image tag and the package version disagree. |
+| `Could not start a browser session` | Playwright was installed without a browser, or the image tag and the package version disagree. The build refuses that pair now, so this means an image built before that check existed: rebuild. |
+| `could not listen: EACCES ... privkey.pem` | The mounted key belongs to the host user, not to uid 1000. See "What you need". |
+| Code 3 immediately after `bfwp-device add` | The server is an image old enough to read the registry once at startup. Rebuild it; the current one reloads and logs it. |

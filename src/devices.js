@@ -47,11 +47,15 @@ export class DeviceStore {
   constructor(filePath) {
     this.filePath = filePath;
     this.data = { version: FILE_VERSION, devices: [] };
+    // mtime and size of the file this.data was read from, or null before the
+    // first read. See refreshIfChanged.
+    this.stamp = null;
   }
 
   load() {
     if (!fs.existsSync(this.filePath)) {
       this.data = { version: FILE_VERSION, devices: [] };
+      this.stamp = null;
       return this;
     }
     const raw = fs.readFileSync(this.filePath, 'utf8');
@@ -65,7 +69,44 @@ export class DeviceStore {
       throw new Error(`${this.filePath} has no devices array`);
     }
     this.data = { version: FILE_VERSION, devices: parsed.devices };
+    this.stamp = this._stamp();
     return this;
+  }
+
+  /** `mtime:size`, or null when the file does not exist. */
+  _stamp() {
+    try {
+      const stat = fs.statSync(this.filePath);
+      return `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Re-reads the file if it changed under us, and says whether it did.
+   *
+   * THE SERVER IS NOT THE ONLY WRITER. `bin/bfwp-device.js add` is a second
+   * process writing this file directly -- same container, different process -- so
+   * without this a device registered against a running server is invisible until
+   * the next restart: an operator follows docs/DEPLOY.md exactly, pastes a
+   * perfectly good token into the phone, and the server answers UNKNOWN_DEVICE.
+   *
+   * It is not only a convenience. `disable` is the command for a lost phone, and a
+   * disable the running server cannot see is a lost phone that still connects --
+   * which is a security-relevant staleness rather than an annoyance.
+   *
+   * Compared on mtime AND size, because a same-millisecond rewrite of the same
+   * length is possible and this is the wrong place to be clever.
+   *
+   * Found by deploying it: the first smoke run against a live server refused a
+   * device that `bfwp-device.js list` had just printed.
+   */
+  refreshIfChanged() {
+    const stamp = this._stamp();
+    if (stamp === this.stamp) return false;
+    this.load();
+    return true;
   }
 
   /** Written to a temporary file and renamed, so a crash cannot truncate the registry. */
@@ -75,6 +116,9 @@ export class DeviceStore {
     const temporary = `${this.filePath}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, `${JSON.stringify(this.data, null, 2)}\n`, { mode: 0o600 });
     fs.renameSync(temporary, this.filePath);
+    // The file on disk is now what this store holds, so refreshIfChanged must not
+    // report a change this process made itself.
+    this.stamp = this._stamp();
     return this;
   }
 

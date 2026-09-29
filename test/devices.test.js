@@ -38,6 +38,71 @@ test('the registry file is written owner-read-only', () => {
   assert.equal(mode, 0o600, `expected 0600, got 0${mode.toString(8)}`);
 });
 
+// ── The registry is written by ANOTHER PROCESS ──────────────────────────────
+// `bin/bfwp-device.js add` is a second process against the same file, so a server
+// that read it once would refuse a device the operator had just registered -- and
+// would go on serving one whose `disable` it never saw, which is the difference
+// between an annoyance and a lost phone that still connects. Found on the first
+// live deployment: the smoke test was refused a device that `list` had printed.
+
+/** A second reader and writer of the same file, as the CLI is. */
+function otherProcess(store) {
+  const cli = new DeviceStore(store.filePath);
+  cli.load();
+  return cli;
+}
+
+test('a device another process added is picked up without a restart', () => {
+  const { store } = freshStore();
+  assert.equal(store.size, 0);
+
+  const { device, token } = otherProcess(store).add('registered while the server ran');
+
+  assert.equal(store.refreshIfChanged(), true, 'the change should have been noticed');
+  assert.equal(store.size, 1);
+  assert.equal(store.verify(device.deviceId, token).ok, true,
+    'the token the operator pasted must work without restarting anything');
+});
+
+test('a disable another process wrote reaches the running server', () => {
+  const { store } = freshStore();
+  const { device, token } = store.add('a phone about to be lost');
+  otherProcess(store).setDisabled(device.deviceId, true);
+
+  assert.equal(store.refreshIfChanged(), true);
+  const verdict = store.verify(device.deviceId, token);
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.code, ErrorCode.DISABLED_DEVICE);
+});
+
+test('a removal another process made reaches the running server', () => {
+  const { store } = freshStore();
+  const { device, token } = store.add('a phone to be removed');
+  otherProcess(store).remove(device.deviceId);
+
+  assert.equal(store.refreshIfChanged(), true);
+  assert.equal(store.verify(device.deviceId, token).code, ErrorCode.UNKNOWN_DEVICE);
+});
+
+test('a registry that has not changed is not re-read', () => {
+  const { store } = freshStore();
+  store.add('a phone');
+
+  // save() stamps the file it wrote, so a process does not report its own writes
+  // as somebody else's change.
+  assert.equal(store.refreshIfChanged(), false);
+  assert.equal(store.refreshIfChanged(), false);
+});
+
+test('a registry file that disappears is an empty registry, not a crash', () => {
+  const { store, directory } = freshStore();
+  store.add('a phone');
+  fs.rmSync(path.join(directory, 'devices.json'));
+
+  assert.equal(store.refreshIfChanged(), true);
+  assert.equal(store.size, 0);
+});
+
 test('the public list never exposes the digest', () => {
   const { store } = freshStore();
   store.add('my phone');

@@ -16,9 +16,10 @@
     "start": "node bin/bfwp-render.js",
     "device": "node bin/bfwp-device.js",
     "gen-vectors": "node bin/gen-vectors.js",
+    "smoke": "node bin/bfwp-smoke.js",
     "test": "node --test"
   },
   "dependencies": {
-    "playwright": ">=1.40 <2"
+    "playwright": "1.49.1"
   }
 }

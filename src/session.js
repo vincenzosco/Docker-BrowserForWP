@@ -235,6 +235,15 @@ export class Session {
       return;
     }
 
+    // The registry is written by ANOTHER PROCESS (`bfwp-device.js`, the same
+    // container and a different process), so it is re-read when the file changes.
+    // Logged, because an operator who has just run `add` is entitled to see that
+    // the server noticed -- and a `disable` nobody notices is a lost phone that
+    // still connects.
+    if (this.store.refreshIfChanged()) {
+      this.log.info(`${this.sessionId} device registry reloaded: ${this.store.size} device(s)`);
+    }
+
     const verdict = this.store.verify(hello.deviceId, hello.token);
     if (!verdict.ok) {
       const message = verdict.code === ErrorCode.UNKNOWN_DEVICE

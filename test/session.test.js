@@ -204,6 +204,47 @@ test('the viewport the client declares is the viewport the browser gets', async 
   assert.deepEqual(ctx.factory.browser.viewport, { width: 720, height: 1280, dpr: 3 });
 });
 
+test('a device registered while the server is running is accepted', async () => {
+  const ctx = harness();
+
+  // A second process against the same file, as `bin/bfwp-device.js add` is: the
+  // operator's next step after registering a phone is to paste the token into
+  // it, and a server that needs a restart in the middle of that is a server that
+  // answers UNKNOWN_DEVICE to a perfectly good token.
+  const cli = new DeviceStore(ctx.store.filePath);
+  cli.load();
+  const { device, token } = cli.add('a phone added after the server started');
+
+  await ctx.session.onFrame({
+    type: Type.HELLO,
+    seq: 0,
+    payload: helloPayload({ deviceId: device.deviceId, token }),
+  });
+
+  const ack = messages.decodeHelloAck(decodeFrame(ctx.out[0]).payload);
+  assert.equal(ack.ok, true, 'no restart should be needed after registering a device');
+  assert.equal(ctx.session.state, 'open');
+});
+
+test('a disable written while the server is running is honoured', async () => {
+  const ctx = harness();
+  // The device this harness registered is the one being lost.
+  const cli = new DeviceStore(ctx.store.filePath);
+  cli.load();
+  cli.setDisabled(ctx.device.deviceId, true);
+
+  await ctx.session.onFrame({
+    type: Type.HELLO,
+    seq: 0,
+    payload: helloPayload({ deviceId: ctx.device.deviceId, token: ctx.token }),
+  });
+
+  const ack = messages.decodeHelloAck(decodeFrame(ctx.out[0]).payload);
+  assert.equal(ack.ok, false);
+  assert.equal(ack.code, ErrorCode.DISABLED_DEVICE,
+    'a lost phone must stop working when it is disabled, not at the next restart');
+});
+
 test('a wrong token is refused with BAD_TOKEN and no salt', async () => {
   const ctx = harness();
   await ctx.session.onFrame({
