@@ -76,6 +76,8 @@ cp /etc/letsencrypt/live/render.example.com/privkey.pem tls/
 
 # 2. Configure and start.
 export BFWP_PUBLIC_URL=https://render.example.com:8443
+#    ...or BFWP_REGISTER_OPEN=1 and no secret at all, for a page that mints tokens
+#    for whoever finds it. See below and docs/DEPLOY.md.
 export BFWP_REGISTER_SECRET="$(head -c 24 /dev/urandom | base64 | tr -d '/+=')"
 docker compose up -d --build
 
@@ -84,12 +86,26 @@ docker compose up -d --build
 #    registry written as root is one the server (as pwuser) cannot then read.
 docker compose exec render bin/bfwp-device.sh add "my phone"
 
-#    ...or let people ask for one themselves on the registration page. It is
-#    published on the HOST'S LOOPBACK, so from your own machine:
+#    ...or let people ask for one themselves on the registration page. It lives at
+#    the ROOT of the server's address -- https://<host>/ -- and plain http on port
+#    80 redirects there, so typing the bare address in a browser lands on it.
+#
+#    Published on the HOST'S LOOPBACK by default, so from your own machine:
 #      gcloud compute ssh <host> -- -N -L 8445:127.0.0.1:8445
-#      open http://127.0.0.1:8445/?k=$BFWP_REGISTER_SECRET
-#    Set BFWP_REGISTER_BIND_IP=0.0.0.0 to open it to the network -- the access
-#    code above is what gates it either way. See docs/DEPLOY.md.
+#      open https://127.0.0.1:8445/?k=$BFWP_REGISTER_SECRET
+#
+#    To put it on the network, in .env:
+#      BFWP_REGISTER_BIND_IP=0.0.0.0
+#      BFWP_REGISTER_URL=https://<host>/   # where the http listener sends people
+#      BFWP_REGISTER_HTTP_PORT=8080        # the container side of the host's port 80
+#    and open ports 80, 443 and 8445 in the host's firewall. The access code above
+#    still gates it: every request needs ?k=...
+#
+#    For a page that takes no code -- people ask for their own token -- set
+#      BFWP_REGISTER_OPEN=1
+#    and UNSET BFWP_REGISTER_SECRET (one or the other, never both: config.js
+#    refuses the pair). What is left is the challenge under the form and one token
+#    per address per day. See docs/DEPLOY.md.
 
 # 4. On the phone: Settings → Server, with this server's url in *Server address*
 #    and the token in *Device token*, then Settings → Rendering engine → Server

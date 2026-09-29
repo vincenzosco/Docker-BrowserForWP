@@ -136,6 +136,51 @@ test('a rate limit of zero is allowed, and means no limit', () => {
   assert.throws(() => loadConfig({ BFWP_REGISTER_PER_HOUR: '1000' }), /BFWP_REGISTER_PER_HOUR/);
 });
 
+test('the page may be opened to whoever finds it, and only deliberately', () => {
+  // The default is still one token per address per day, on a page that takes a
+  // code: opening it is the operator saying so.
+  assert.equal(loadConfig({}).registerOpen, false);
+  assert.equal(loadConfig({}).registerPerDay, 1);
+
+  // A page nobody can reach, with no code, protects nothing: refused.
+  assert.throws(() => loadConfig({ BFWP_REGISTER_OPEN: '1' }), /nobody to open it to/);
+
+  // Two answers to one question: refused rather than one of them quietly winning.
+  assert.throws(() => loadConfig({
+    BFWP_REGISTER_OPEN: '1', BFWP_REGISTER_HOST: '0.0.0.0', BFWP_REGISTER_SECRET: 'a-code-long-enough',
+  }), /Set one or the other/);
+
+  const open = loadConfig({ BFWP_REGISTER_OPEN: '1', BFWP_REGISTER_HOST: '0.0.0.0' });
+  assert.equal(open.registerIsLoopback, false);
+  assert.equal(open.registerOpen, true);
+});
+
+test('the plain-http listener needs a target, and the target must be https', () => {
+  assert.equal(loadConfig({}).registerHttpPort, 0, 'off unless asked for');
+  assert.throws(() => loadConfig({ BFWP_REGISTER_HTTP_PORT: '8080' }), /nowhere to send anyone/);
+  assert.throws(() => loadConfig({
+    BFWP_REGISTER_HTTP_PORT: '8080', BFWP_REGISTER_URL: 'http://render.example/',
+  }), /must be https/);
+  assert.throws(() => loadConfig({
+    BFWP_REGISTER_HTTP_PORT: '8080', BFWP_REGISTER_URL: 'not a url',
+  }), /is not a URL/);
+
+  const config = loadConfig({
+    BFWP_REGISTER_HTTP_PORT: '8080', BFWP_REGISTER_URL: 'https://render.example',
+  });
+  assert.equal(config.registerHttpPort, 8080);
+  assert.equal(config.registerUrl, 'https://render.example/');
+});
+
+test('the plain-http port cannot collide with the other three listeners', () => {
+  assert.throws(() => loadConfig({
+    BFWP_REGISTER_HTTP_PORT: '8443', BFWP_REGISTER_URL: 'https://render.example/',
+  }), /must differ from BFWP_PORT/);
+  assert.throws(() => loadConfig({
+    BFWP_REGISTER_HTTP_PORT: '8445', BFWP_REGISTER_URL: 'https://render.example/',
+  }), /BFWP_REGISTER_PORT/);
+});
+
 test('every default is present in the frozen defaults table', () => {
   const config = loadConfig({});
   for (const key of Object.keys(DEFAULTS)) {

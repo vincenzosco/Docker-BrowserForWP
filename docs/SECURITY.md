@@ -91,18 +91,40 @@ protect, and it has no accounts, no passwords and no reset flow to get wrong.
   address is REFUSED unless `BFWP_REGISTER_SECRET` is also set, because a page
   that mints credentials must not be one mistyped variable away from the open
   internet. With a secret set, every request needs it: the page and the form.
+- **An operator may open it deliberately**, with `BFWP_REGISTER_OPEN=1` and no
+  secret, and `src/config.js` refuses that together with a loopback bind (a page
+  nobody can reach) and together with a secret (two answers to one question). This
+  is the weakest configuration the server has and it is not dressed up: whoever
+  finds the page can hold a token, the challenge under the form is a speed bump,
+  and the only things bounding the result are the per-address limits (one token
+  per address per day, three per hour) and `BFWP_MAX_SESSIONS`.
+- **The page is at the root of the address, and the plain-http listener serves
+  nothing but a `301`.** `BFWP_REGISTER_HTTP_PORT` exists so that typing the bare
+  address in a browser reaches the encrypted page; it never serves the form, and a
+  form POSTed to it is refused with a `405` and logged, because a token posted over
+  plain http would be a token on the wire. `BFWP_REGISTER_URL` must be `https://`
+  unless `BFWP_ALLOW_INSECURE=1`, or the redirect would send people to another
+  plain-http address.
 - **In Docker the interesting case is inverted, and the compose file says so.**
   The container binds `0.0.0.0`, because a published port is forwarded to the
   container's address and never to its loopback -- a page bound to `127.0.0.1`
   inside a container is reachable from nowhere. What limits who gets there is the
-  host-side publish, which ships as `127.0.0.1:8445:8445`; `BFWP_REGISTER_BIND_IP`
-  opens it, and the access code that the non-loopback bind makes mandatory is what
-  keeps that one-variable change from being an incident.
+  host-side publish, which ships as `127.0.0.1` for all three of the page's ports;
+  `BFWP_REGISTER_BIND_IP` opens them, and an access code (or a decision to go
+  without one) is what keeps that one-variable change from being an incident.
+- **The per-address limits count what the LISTENER sees.** Through the host-side
+  publish the container is shown the Docker bridge address rather than the caller's
+  (`172.18.0.1` on this deployment), so everything arriving by tunnel or from the
+  server itself shares one allowance. Requests arriving from the network carry the
+  client's own address. A limit must therefore never be described as per-client
+  without saying which of the two paths it was measured on -- docs/DEPLOY.md keeps
+  the measurement.
 - **The bot check is a signed, single-use, expiring challenge** (an arithmetic
   question whose answer is in an HMAC'd envelope), a honeypot field, a minimum
-  time on the form, and a per-address hourly limit. It stops a script that fills
-  forms. It does not stop somebody solving the challenge by hand, and it is not
-  claimed to: the gate that matters is the loopback default, or the secret.
+  time on the form, and a per-address limit with a day and an hour window. It stops
+  a script that fills forms. It does not stop somebody solving the challenge by
+  hand, and it is not claimed to: the gate that matters is the loopback default, or
+  the secret.
 - **The page runs no JavaScript**, is served `no-store`, and carries
   `Content-Security-Policy: default-src 'none'`. A page that hands out a
   credential is the last place to want a script running.

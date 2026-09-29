@@ -225,15 +225,33 @@ the people holding the phones. So the server also serves a page, on
 a token once -- the same single-use digest the CLI mints, with no account, no
 password and no reset flow.
 
-**In Docker it is published on the HOST'S LOOPBACK** -- `127.0.0.1:8445:8445` in
-the compose file, which is what makes a tunnel work rather than a port on the
-network:
+**It is served at the ROOT of the server's address**, so that a person who types
+the address into a browser arrives at it without a port number and without a path.
+That is three published ports onto two listeners, and the compose file does it
+with the host's `80` and `443` mapped onto the container's unprivileged `8080` and
+`8445` (the server runs as uid 1000: binding 80 inside the container would need a
+capability this image deliberately does not have):
+
+| typed by a person | host | container | answered by |
+| --- | --- | --- | --- |
+| `http://<host>/` | 80 | 8080 | a `301` to `BFWP_REGISTER_URL`, and nothing else |
+| `https://<host>/` | 443 | 8445 | the page |
+| `https://<host>:8445/` | 8445 | 8445 | the same page, for a tunnel |
+
+**All three are published on the HOST'S LOOPBACK by default** --
+`127.0.0.1:8445:8445` and the two above it -- which is what makes a tunnel work
+rather than a port on the network:
 
 ```bash
 # from the machine you are sitting at
 gcloud compute ssh docker1 -- -N -L 8445:127.0.0.1:8445
-# then open http://127.0.0.1:8445/?k=<the access code>
+# then open https://127.0.0.1:8445/?k=<the access code>
 ```
+
+The redirect listener is off unless a deployment asks for it, because a redirect
+with nowhere to send anyone is a listener that answers 500 to the one request it
+will ever get: it needs `BFWP_REGISTER_HTTP_PORT` here AND `BFWP_REGISTER_URL`
+there, and `src/config.js` refuses the first without the second.
 
 **The access code is required, and the reason is a Docker detail worth knowing.**
 A published port is forwarded to the container's own address, never to the
@@ -254,29 +272,57 @@ What the container logs then says what it is bound to and nothing more, because 
 process inside a container cannot see how its port was published:
 
 ```
-INFO registration page on http://0.0.0.0:8445 (bound on every interface, access code required), 3 per address per hour
+INFO registration page on https://0.0.0.0:8445 (bound on every interface, access code required), 1 per address per day, 3 per address per hour
+INFO registration page: plain http on port 8080 answers 301 to https://render.example/ and serves nothing else
 ```
 
-Every request must then carry it, and the operator shares the link
-(`https://host:8445/?k=<the code>`) with the people who should have a token.
+Every request must then carry the code, and the operator shares the link
+(`https://host/?k=<the code>`) with the people who should have a token.
 
-**To let people reach it themselves**, one more variable:
+**To put the page on the network**, two more variables:
 
 ```bash
-BFWP_REGISTER_BIND_IP=0.0.0.0        # .env, plus the port in the host's firewall
+BFWP_REGISTER_BIND_IP=0.0.0.0        # .env, plus ports 80, 443 and 8445 in the host's firewall
+BFWP_REGISTER_URL=https://render.example/   # where the http listener sends people
+BFWP_REGISTER_HTTP_PORT=8080        # the container side of the host's port 80
 ```
 
 and the page is on the internet behind its access code, its bot check and its
-per-address limit. What is NOT recommended is removing the code at the same time:
-the code is cheap, and the page mints credentials.
+per-address limits.
+
+**Or open it to whoever finds it**, which is the other thing an operator may want
+and is a decision rather than a default:
+
+```bash
+BFWP_REGISTER_OPEN=1                # .env, and UNSET BFWP_REGISTER_SECRET
+```
+
+One or the other, never both: `src/config.js` refuses `BFWP_REGISTER_OPEN` together
+with a secret (two answers to one question) and together with a loopback bind (a
+page nobody can reach, opened). With the code gone, what stands between this page
+and a stranger is the challenge under the form and **one token per address per
+day** (`BFWP_REGISTER_PER_DAY`, `1` by default) with an hourly burst guard beneath
+it (`BFWP_REGISTER_PER_HOUR`, `3`). Say it plainly: that is a speed bump, not a
+defence, and the honest reason to accept it is that the tokens are per device and
+`BFWP_MAX_SESSIONS` bounds the damage. A 1 GB VM holds two sessions; it does not
+matter how many tokens exist.
 
 The form is behind a bot check: an arithmetic question whose answer is inside a
-signed, single-use, expiring envelope, a field a person never fills, a minimum
-time on the form, and `BFWP_REGISTER_PER_HOUR` registrations per address per hour
-(`3` by default; `0` disables the limit). That stops a script that fills forms. It
-does not stop a person solving the question by hand, and nothing here pretends it
-does -- the gate that matters is the publish above (and, outside Docker, the
-loopback default), together with the access code.
+signed, single-use, expiring envelope, a field a person never fills, and a minimum
+time on the form. That stops a script that fills forms. It does not stop a person
+solving the question by hand, and nothing here pretends it does -- the gate that
+matters is the publish above (and, outside Docker, the loopback default), together
+with the access code when it is set.
+
+**The per-address limits count the address the LISTENER sees, and that is not
+always the person.** A published port reached through the host -- which is the case
+for anything arriving through the tunnel, and for the server's own requests --
+appears to the container as the Docker bridge (`172.18.0.1`), so every such caller
+shares one allowance. Measured on this deployment: a request from the operator's
+own machine through the tunnel logged `172.18.0.1`; a request from the internet
+logged the client's own address. Two consequences, and both are real: a limit can
+never be claimed as per-client without that measurement, and the operator who
+tests from the server itself is testing the collapsed case.
 
 ### A token belongs to one phone
 
@@ -397,11 +443,15 @@ behaving strangely later.
 | `BFWP_TLS_CERT` / `BFWP_TLS_KEY` | `/etc/bfwp/tls/...` | PEM paths. |
 | `BFWP_DEVICES_FILE` | `/var/lib/bfwp/devices.json` | The registry. |
 | `BFWP_MAX_SESSIONS` | `16` | Connected devices at once. This is your memory ceiling. |
-| `BFWP_REGISTER_HOST` | `127.0.0.1` | Bind address of the registration page. Beyond loopback it requires `BFWP_REGISTER_SECRET`, and the compose file sets `0.0.0.0` because a published port cannot reach a container's loopback. |
-| `BFWP_REGISTER_PORT` | `8445` | Where the page listens. Must differ from `BFWP_PORT` and `BFWP_PORT + 1` (the audio port). |
-| `BFWP_REGISTER_SECRET` | empty | The access code for the page, 16 characters or more. Required whenever the bind address is not loopback. |
-| `BFWP_REGISTER_PER_HOUR` | `3` | Registrations per address per hour. `0` turns the limit off. |
-| `BFWP_REGISTER_BIND_IP` | `127.0.0.1` | **Compose only**, not read by the server: the host address the page's port is published on. `0.0.0.0` puts it on the network. |
+| `BFWP_REGISTER_HOST` | `127.0.0.1` | Bind address of the registration page. Beyond loopback it requires `BFWP_REGISTER_SECRET` -- unless `BFWP_REGISTER_OPEN=1` -- and the compose file sets `0.0.0.0` because a published port cannot reach a container's loopback. |
+| `BFWP_REGISTER_PORT` | `8445` | Where the page listens. Must differ from `BFWP_PORT`, `BFWP_PORT + 1` (the audio port) and `BFWP_REGISTER_HTTP_PORT`. |
+| `BFWP_REGISTER_HTTP_PORT` | `0` | The plain-http listener that answers `301` to `BFWP_REGISTER_URL`. `0` is NO listener, unlike `BFWP_REGISTER_PORT` where `0` means "let the operating system choose". |
+| `BFWP_REGISTER_URL` | empty | Where the http listener sends people, e.g. `https://render.example/`. Required when `BFWP_REGISTER_HTTP_PORT` is set, and must be `https://` unless `BFWP_ALLOW_INSECURE=1`. |
+| `BFWP_REGISTER_SECRET` | empty | The access code for the page, 16 characters or more. Required whenever the bind address is not loopback, unless the page is open. |
+| `BFWP_REGISTER_OPEN` | `false` | The page takes no access code: whoever finds it can mint a token. Refused together with a loopback bind and together with a secret. |
+| `BFWP_REGISTER_PER_DAY` | `1` | Registrations per address per day -- the limit that matters on a public page. `0` turns it off. |
+| `BFWP_REGISTER_PER_HOUR` | `3` | The burst guard under it. `0` turns it off. |
+| `BFWP_REGISTER_BIND_IP` | `127.0.0.1` | **Compose only**, not read by the server: the host address the page's three ports are published on. `0.0.0.0` puts them on the network. |
 | `BFWP_FRAME_QUALITY` | `60` | JPEG quality, 1..95. |
 | `BFWP_MAX_FRAME_BYTES` | `2097152` | Refuse a larger frame before allocating. |
 | `BFWP_SESSION_IDLE_MS` | `120000` | Hang up on a device that has gone quiet. |

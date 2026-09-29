@@ -7,13 +7,28 @@
 // support burden, because it has no accounts either -- it mints the same
 // single-use digest the CLI does, shows it once, and keeps only the digest.
 //
-// WHAT IT CANNOT DO. It cannot list tokens, cannot reveal one, cannot choose which
-// device a token belongs to (a token is claimed by the first device that uses it;
-// see src/devices.js), and cannot be reached from anywhere unless the operator
-// said so twice -- a non-loopback BFWP_REGISTER_HOST AND a BFWP_REGISTER_SECRET.
-// src/config.js refuses either one without the other, which is what keeps "a page
-// that mints credentials" from becoming a token dispenser on the open internet
-// with nobody having decided that it should be one.
+// WHAT IT CANNOT DO. It cannot list tokens, cannot reveal one, and cannot choose
+// which device a token belongs to (a token is claimed by the first device that uses
+// it; see src/devices.js).
+//
+// WHO CAN REACH IT, in order of how much the operator had to decide:
+//
+//   loopback (the default)      nobody but this machine, through a tunnel
+//   published, access code      anyone who has been told the code
+//   BFWP_REGISTER_OPEN=1        anyone who finds it, and src/config.js refuses
+//                               that together with a loopback bind (a page nobody
+//                               can reach) or with a secret (two answers to one
+//                               question)
+//
+// Open mode is a decision with a consequence, so the log says it in those words,
+// and what stands in its place is the challenge under every form plus the
+// per-address limits: one token per address per day by default, with an hourly
+// burst guard beneath it.
+//
+// AND THE FORM IS NEVER SERVED OVER PLAIN HTTP. When BFWP_REGISTER_HTTP_PORT is
+// set there is a second listener whose entire answer is a 301 to
+// BFWP_REGISTER_URL, so that typing the bare address in a browser arrives at the
+// encrypted page instead of at nothing.
 //
 // WHAT IT WRITES. One line per attempt, at info or warn, naming the device and
 // never the token: the token is registered with the log's scrubber before the line
@@ -33,8 +48,9 @@ import { challengeKey, createChallenge, createSpentSet, verifyChallenge } from '
 /** A form is small. Anything larger is not a form. */
 const MAX_BODY_BYTES = 4096;
 
-/** The window the per-address limit counts over. */
+/** The two windows the per-address limits count over: the burst guard, and the day. */
 const RATE_WINDOW_MS = 60 * 60 * 1000;
+const DAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const MAX_LABEL_LENGTH = 120;
 
@@ -110,18 +126,56 @@ export function createRegistrationServer({ config, store, log, now = Date.now, r
   /** Address -> the times it asked to register, newest last. */
   const attempts = new Map();
   let server = null;
+  let redirect = null;
   let ready = Promise.resolve();
 
   const scheme = config.allowInsecure ? 'http' : 'https';
 
-  /** Whether the address may try again now, and the attempt is recorded either way. */
-  function allowAttempt(address) {
+  /**
+   * Whether the address may try again now, and the attempt is recorded either way.
+   *
+   * Two windows over one list of times: the DAY is the limit that matters on a
+   * published page, and the hour is the burst guard under it. Returns null when the
+   * attempt may proceed, or else which window refused it and how long it has left --
+   * "try again later" is not something a person can act on.
+   */
+  function limitRefusal(address) {
     const at = now();
-    const recent = (attempts.get(address) ?? []).filter((time) => at - time < RATE_WINDOW_MS);
+    // Kept for one day and no longer: past that an attempt can neither bind nor
+    // explain itself.
+    const recent = (attempts.get(address) ?? []).filter((time) => at - time < DAY_WINDOW_MS);
     attempts.set(address, recent);
-    if (config.registerPerHour > 0 && recent.length >= config.registerPerHour) return false;
+
+    if (config.registerPerDay > 0 && recent.length >= config.registerPerDay) {
+      // The oldest attempt still counted is the one whose expiry frees the address.
+      const oldest = recent[recent.length - config.registerPerDay];
+      return { scope: 'day', freesInMs: Math.max(0, oldest + DAY_WINDOW_MS - at) };
+    }
+
+    const inHour = recent.filter((time) => at - time < RATE_WINDOW_MS);
+    if (config.registerPerHour > 0 && inHour.length >= config.registerPerHour) {
+      return { scope: 'hour', freesInMs: Math.max(0, inHour[0] + RATE_WINDOW_MS - at) };
+    }
+
     recent.push(at);
-    return true;
+    return null;
+  }
+
+  /** "in about three hours": the shape of answer a person can wait on. */
+  function waitPhrase(ms) {
+    const minutes = Math.ceil(ms / 60000);
+    if (minutes <= 1) return 'in less than a minute';
+    if (minutes < 60) return `in about ${minutes} minutes`;
+    const hours = Math.round(minutes / 60);
+    return hours === 1 ? 'in about an hour' : `in about ${hours} hours`;
+  }
+
+  /** What the limits are, in the log, so the operator need not read config.js. */
+  function describeLimits() {
+    const parts = [];
+    if (config.registerPerDay > 0) parts.push(`${config.registerPerDay} per address per day`);
+    if (config.registerPerHour > 0) parts.push(`${config.registerPerHour} per address per hour`);
+    return parts.length > 0 ? parts.join(', ') : 'no rate limit';
   }
 
   function secretFrom(url, params) {
@@ -159,7 +213,10 @@ ${secretField}
 <input type="hidden" name="nonce" value="${escapeHtml(nonce)}">
 <button type="submit">Register</button>
 </form>
-<p class="muted">A token belongs to the first phone that uses it. If you lose the
+${config.registerPerDay > 0
+      ? `<p class="muted">This address can be given ${config.registerPerDay === 1
+        ? 'one token' : `${config.registerPerDay} tokens`} per day.</p>\n`
+      : ''}<p class="muted">A token belongs to the first phone that uses it. If you lose the
 token, you will need a new one; it is stored here only as a digest and cannot be
 shown again.</p>`;
   }
@@ -207,12 +264,16 @@ shown again.</p>`;
     }
 
     const address = req.socket.remoteAddress ?? 'unknown';
-    if (!allowAttempt(address)) {
-      log.warn(`registration page: ${address} is over the limit of `
-        + `${config.registerPerHour} per hour; refused`);
+    const refused = limitRefusal(address);
+    if (refused) {
+      const limit = refused.scope === 'day' ? config.registerPerDay : config.registerPerHour;
+      const windowName = refused.scope === 'day' ? 'today' : 'in the last hour';
+      log.warn(`registration page: ${address} is over the limit of ${limit} per ${refused.scope}; refused`);
       respond(res, 429, page('Too many', '<h1>Too many registrations</h1>'
-        + '<p>This address has asked for too many tokens in the last hour. Try again'
-        + ' later, or ask the operator for a token.</p>'));
+        + `<p>This address has already been given as many tokens as it can have ${windowName}:`
+        + ` ${limit}. Another one becomes available ${escapeHtml(waitPhrase(refused.freesInMs))}.</p>`
+        + '<p class="muted">A token belongs to one phone and is shown once, so a token'
+        + ' that was not written down is a token to ask the operator to replace.</p>'));
       return;
     }
 
@@ -319,6 +380,54 @@ operator if you ever need the token revoked:
     return config.registerHost.includes(':') ? `[${config.registerHost}]` : config.registerHost;
   }
 
+  /**
+   * The listener that exists so that `ip/` works in a browser.
+   *
+   * It answers 301 to BFWP_REGISTER_URL and NOTHING ELSE: no form, no page, not even
+   * a body that could be mistaken for one. The token is a credential and the form
+   * carries it, so the form is never served over plain http -- what plain http gets
+   * is one line saying where to go.
+   */
+  function startRedirect() {
+    if (config.registerHttpPort === 0 || redirect) return redirect;
+    redirect = http.createServer((req, res) => {
+      let url;
+      try {
+        url = new URL(req.url ?? '/', 'http://registration.local');
+      } catch {
+        respond(res, 400, page('Bad request', '<h1>Bad request</h1>'));
+        return;
+      }
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        // A form posted here would carry a token, or an access code, in the clear.
+        log.warn(`registration page: a ${req.method} to the plain-http port; refused`);
+        respond(res, 405, page('Use https', '<h1>Use https</h1><p>The page that mints tokens is at'
+          + ` <a href="${escapeHtml(config.registerUrl)}">${escapeHtml(config.registerUrl)}</a>,`
+          + ' over https.</p>'));
+        return;
+      }
+      // The query string is carried over unchanged: `?k=` is how a deployment with
+      // an access code is reached, and dropping it would send people to a page that
+      // refuses them.
+      const target = config.registerUrl + (url.search ?? '');
+      const body = Buffer.from(`The page that mints device tokens is at ${target}\n`, 'utf8');
+      res.writeHead(301, {
+        location: target,
+        'content-type': 'text/plain; charset=utf-8',
+        'content-length': body.length,
+        'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer',
+      });
+      res.end(body);
+    });
+    redirect.on('error', (error) => log.error('registration redirect listener error', error));
+    redirect.listen(config.registerHttpPort, config.registerHost, () => {
+      log.info(`registration page: plain http on port ${config.registerHttpPort} answers 301 to`
+        + ` ${config.registerUrl} and serves nothing else`);
+    });
+    return redirect;
+  }
+
   function start() {
     if (server) return server;
     if (config.allowInsecure) {
@@ -340,6 +449,8 @@ operator if you ever need the token revoked:
     ready = new Promise((resolve) => server.once('listening', resolve));
 
     server.on('error', (error) => log.error('registration listener error', error));
+    // Before the listener reports itself, because the two lines belong together.
+    startRedirect();
     server.listen(config.registerPort, config.registerHost, () => {
       // The port the socket actually took, which is the configured one except when
       // the configuration said 0 and the operating system chose.
@@ -350,8 +461,11 @@ operator if you ever need the token revoked:
         // address is the only one a published port can reach, and what limits who
         // gets here is the publish (see docker-compose.yml). Claiming more than
         // the bind would be this line guessing about a network it cannot see.
-        + `(${config.registerIsLoopback ? 'loopback only' : 'bound on every interface, access code required'}), `
-        + `${config.registerPerHour > 0 ? `${config.registerPerHour} per address per hour` : 'no rate limit'}`);
+        + `(${config.registerIsLoopback ? 'loopback only'
+          : config.registerOpen
+            ? 'bound on every interface, NO ACCESS CODE: open to whoever finds it'
+            : 'bound on every interface, access code required'}), `
+        + describeLimits());
       if (config.registerIsLoopback) {
         log.info('the registration page is loopback only: reach it with an SSH tunnel, e.g.'
           + ` ssh -L ${port}:127.0.0.1:${port} the-server`);
@@ -361,10 +475,10 @@ operator if you ever need the token revoked:
   }
 
   async function stop() {
-    if (!server) return;
-    const closing = server;
+    const closing = [redirect, server].filter(Boolean);
+    redirect = null;
     server = null;
-    await new Promise((resolve) => closing.close(resolve));
+    await Promise.all(closing.map((listener) => new Promise((resolve) => listener.close(resolve))));
   }
 
   return {
@@ -379,6 +493,12 @@ operator if you ever need the token revoked:
       const port = address && typeof address === 'object' ? address.port : config.registerPort;
       return `${scheme}://${hostForUrl()}:${port}/`;
     },
+    /** The plain-http listener, or null when the deployment did not ask for one. */
+    get redirectUrl() {
+      const address = redirect?.address();
+      if (!address || typeof address !== 'object') return null;
+      return `http://${hostForUrl()}:${address.port}/`;
+    },
     /** Read by tests, and by nothing that serves a page. */
     get pendingChallenges() {
       return spent.size;
@@ -386,4 +506,4 @@ operator if you ever need the token revoked:
   };
 }
 
-export { MAX_BODY_BYTES, RATE_WINDOW_MS };
+export { MAX_BODY_BYTES, RATE_WINDOW_MS, DAY_WINDOW_MS };

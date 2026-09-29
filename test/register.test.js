@@ -12,6 +12,7 @@
 //     handler function would see.
 
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -162,13 +163,24 @@ test('the spent set is bounded, in both size and age', () => {
 
 // ── The page, over a socket ─────────────────────────────────────────────────
 
-async function freshPage({ secret = '', perHour = 3, now } = {}) {
+async function freshPage({ secret = '', perHour = 3, perDay = 0, httpPort = 0, url = '', open = false, now } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bfwp-register-'));
   const config = loadConfig({
     BFWP_ALLOW_INSECURE: '1',
     BFWP_REGISTER_PORT: '0',
     BFWP_REGISTER_PER_HOUR: String(perHour),
+    // Zero here and one in production: the tests about the HOURLY window say so
+    // with perDay: 0, because the shipped default of one per day would refuse the
+    // second request of a test that is not about the day at all. config.test.js is
+    // where the real default is asserted.
+    BFWP_REGISTER_PER_DAY: String(perDay),
+    BFWP_REGISTER_HTTP_PORT: String(httpPort),
+    BFWP_REGISTER_URL: url,
     BFWP_REGISTER_SECRET: secret,
+    BFWP_REGISTER_OPEN: open ? '1' : '0',
+    // An open page is refused on loopback -- nobody to open it to -- so the tests
+    // that use it have to bind the address the world can reach.
+    ...(open ? { BFWP_REGISTER_HOST: '0.0.0.0' } : {}),
     BFWP_DEVICES_FILE: path.join(directory, 'devices.json'),
   });
   const store = new DeviceStore(config.devicesFile).load();
@@ -189,6 +201,18 @@ async function freshPage({ secret = '', perHour = 3, now } = {}) {
   // it here keeps every test reading `registration.url` as the actual address.
   await registration.ready;
   return { registration, store, lines, clock, directory, config };
+}
+
+/**
+ * A port the operating system has just agreed is free. The redirect listener cannot
+ * ask for 0 the way the page does, because for THAT listener 0 means "no listener".
+ */
+async function freePort() {
+  const probe = http.createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address();
+  await new Promise((resolve) => probe.close(resolve));
+  return port;
 }
 
 async function getForm(page, k = '') {
@@ -397,4 +421,103 @@ test('a label is escaped rather than trusted', async (t) => {
   const { html } = await register(page, { label: '<script>alert(1)</script>' });
   assert.ok(!html.includes('<script>'), 'the label comes back from the browser and must not run');
   assert.ok(html.includes('&lt;script&gt;'));
+});
+
+// ── One token per address per day ─────────────────────────────────────────
+// The limit that matters on a page the world can reach: the hourly guard is a
+// burst guard, and a burst of one an hour is still twenty-four devices a day.
+
+test('one address gets one token a day, and the refusal says when the next one comes', async (t) => {
+  const page = await freshPage({ perDay: 1, perHour: 3 });
+  t.after(() => page.registration.stop());
+
+  const first = await register(page);
+  assert.equal(first.status, 200);
+  const token = first.html.match(/<pre><code>([A-Za-z0-9_-]+)<\/code><\/pre>/)?.[1];
+  assert.ok(token && token.length > 20, 'the page showed a token');
+  assert.ok(page.lines.every((line) => !line.includes(token)), 'and the log never names it');
+
+  const second = await register(page);
+  assert.equal(second.status, 429);
+  assert.equal(page.store.size, 1, 'the refusal minted nothing');
+  assert.match(second.html, /as many tokens as it can have today: 1/);
+  // "Try again later" is not a thing a person can act on; this is.
+  assert.match(second.html, /Another one becomes available in about 24 hours/);
+  assert.ok(page.lines.some((line) => /over the limit of 1 per day/.test(line)));
+});
+
+test('the day is a window and not a wall: a day later the address may ask again', async (t) => {
+  const page = await freshPage({ perDay: 1 });
+  t.after(() => page.registration.stop());
+
+  assert.equal((await register(page)).status, 200);
+  assert.equal((await register(page)).status, 429);
+  page.clock.at += 24 * 60 * 60 * 1000 + 1000;
+  assert.equal((await register(page)).status, 200);
+  assert.equal(page.store.size, 2);
+});
+
+test('a daily limit of zero leaves the hourly guard standing', async (t) => {
+  const page = await freshPage({ perDay: 0, perHour: 2 });
+  t.after(() => page.registration.stop());
+
+  assert.equal((await register(page)).status, 200);
+  assert.equal((await register(page)).status, 200);
+  const third = await register(page);
+  assert.equal(third.status, 429);
+  assert.match(third.html, /as many tokens as it can have in the last hour: 2/);
+});
+
+test('the form says how many tokens the address may take, when there is a limit', async (t) => {
+  const page = await freshPage({ perDay: 1, perHour: 0 });
+  t.after(() => page.registration.stop());
+  assert.match((await getForm(page)).html, /This address can be given one token per day\./);
+});
+
+// ── The page at the root of the address ───────────────────────────────────
+// So that typing the bare IP in a browser arrives at the page, and nowhere near a
+// form: what plain http gets is one 301 and one line of text.
+
+test('the plain-http listener answers 301 to the page and serves no form', async (t) => {
+  const port = await freePort();
+  const page = await freshPage({ httpPort: port, url: 'https://render.example/' });
+  t.after(() => page.registration.stop());
+
+  const base = page.registration.redirectUrl;
+  assert.equal(base, `http://127.0.0.1:${port}/`);
+
+  const answer = await fetch(base, { redirect: 'manual' });
+  assert.equal(answer.status, 301);
+  assert.equal(answer.headers.get('location'), 'https://render.example/');
+  assert.equal((await answer.text()).includes('<form'), false, 'no form over plain http');
+
+  // The query string survives, so a deployment with an access code does not send
+  // people to a page that refuses them.
+  const withCode = await fetch(`${base}?k=the-operator-code`, { redirect: 'manual' });
+  assert.equal(withCode.headers.get('location'), 'https://render.example/?k=the-operator-code');
+
+  // A form posted here would carry a credential in the clear.
+  const posted = await fetch(base, { method: 'POST', body: 'label=x' });
+  assert.equal(posted.status, 405);
+  assert.equal((await posted.text()).includes('<form'), false);
+  assert.ok(page.lines.some((line) => /a POST to the plain-http port/.test(line)));
+});
+
+test('there is no plain-http listener unless a deployment asks for one', async (t) => {
+  const page = await freshPage();
+  t.after(() => page.registration.stop());
+  assert.equal(page.registration.redirectUrl, null);
+});
+
+test('an open page has no code field, and mints for whoever arrives', async (t) => {
+  const page = await freshPage({ open: true, perDay: 0, perHour: 0 });
+  t.after(() => page.registration.stop());
+
+  const form = await getForm(page);
+  assert.equal(form.status, 200);
+  assert.equal(form.html.includes('name="secret"'), false, 'an open page has no code field');
+  assert.equal((await register(page)).status, 200);
+  assert.equal(page.store.size, 1);
+  assert.ok(page.lines.some((line) => /NO ACCESS CODE/.test(line)),
+    'the log says which page this is, in those words');
 });

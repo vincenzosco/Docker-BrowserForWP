@@ -31,9 +31,21 @@ services:
       # is required rather than optional here.
       #
       # To let people reach it themselves, set BFWP_REGISTER_BIND_IP=0.0.0.0 (and
-      # open the port in the host's firewall). The access code is what makes that
-      # decision reversible: it is already required, and it still is.
-      - "${BFWP_REGISTER_BIND_IP:-127.0.0.1}:8445:8445"
+      # open the port in the host's firewall). Either the access code stays
+      # required, or BFWP_REGISTER_OPEN=1 drops it and the per-address limits are
+      # what is left; src/config.js refuses the two answers at once.
+      #
+      # THE TWO MAPPINGS BELOW PUT THE PAGE AT THE ROOT OF THE ADDRESS, so that
+      # typing the bare IP in a browser arrives at it: 80 serves nothing but a 301
+      # to the https page, and 443 serves the page itself. They are mapped to the
+      # container's UNPRIVILEGED ports (8080 and 8445) because the server runs as
+      # uid 1000 -- a bind to 80 or 443 inside the container would need
+      # CAP_NET_BIND_SERVICE, and this image asks for no capabilities at all.
+      #
+      # Both are on the same bind address as the tunnel port above, which is what
+      # makes the whole thing reversible in one variable.
+      - "${BFWP_REGISTER_BIND_IP:-127.0.0.1}:80:8080"
+      - "${BFWP_REGISTER_BIND_IP:-127.0.0.1}:443:8445"
     environment:
       BFWP_PORT: "8443"
       BFWP_PUBLIC_URL: "${BFWP_PUBLIC_URL:?set BFWP_PUBLIC_URL to the https url phones use}"
@@ -56,9 +68,18 @@ services:
       # between a private page and a public one is then one variable, and the code
       # is what makes that variable safe to change.
       BFWP_REGISTER_PORT: "${BFWP_REGISTER_PORT:-8445}"
+      # The listener that answers 301 to the page and nothing else. Empty means
+      # no such listener; when it is set, BFWP_REGISTER_URL is required.
+      BFWP_REGISTER_HTTP_PORT: "${BFWP_REGISTER_HTTP_PORT:-}"
+      BFWP_REGISTER_URL: "${BFWP_REGISTER_URL:-}"
       BFWP_REGISTER_HOST: "${BFWP_REGISTER_HOST:-0.0.0.0}"
-      BFWP_REGISTER_SECRET: "${BFWP_REGISTER_SECRET:?set BFWP_REGISTER_SECRET to an access code of 16 or more characters for the registration page}"
+      # An access code, or BFWP_REGISTER_OPEN=1 for a page that mints tokens for
+      # whoever finds it. Never both: src/config.js refuses that pair.
+      BFWP_REGISTER_SECRET: "${BFWP_REGISTER_SECRET:-}"
+      BFWP_REGISTER_OPEN: "${BFWP_REGISTER_OPEN:-0}"
       BFWP_REGISTER_PER_HOUR: "${BFWP_REGISTER_PER_HOUR:-3}"
+      # The limit that matters on a published page.
+      BFWP_REGISTER_PER_DAY: "${BFWP_REGISTER_PER_DAY:-1}"
     volumes:
       - ./tls:/etc/bfwp/tls:ro
       - devices:/var/lib/bfwp

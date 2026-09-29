@@ -85,9 +85,12 @@ USER root
 
 # 8443 is the render channel (TLS 1.3 only). 8444 is the audio endpoint, spoken
 # to by MediaElement over TLS 1.2+, and only opened when audio is enabled. 8445 is
-# the registration page (TLS 1.2+), which listens on loopback unless a deployment
-# says otherwise AND sets an access code -- see src/config.js.
-EXPOSE 8443 8444 8445
+# the registration page (TLS 1.2+), and 8080 is its plain-http twin, which answers
+# 301 and nothing else. Neither listens anywhere unless a deployment says so -- see
+# src/config.js -- and both are unprivileged ports on purpose: this image runs as
+# uid 1000 and asks for no capabilities, so the host's 80 and 443 are mapped onto
+# these from docker-compose.yml.
+EXPOSE 8443 8444 8445 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["node", "bin/healthcheck.js"]

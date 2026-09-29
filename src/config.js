@@ -33,8 +33,19 @@ export const DEFAULTS = Object.freeze({
   registerHost: '127.0.0.1',
   // 8444 is the audio endpoint (BFWP_PORT + 1), which is why this is not 8444.
   registerPort: 8445,
+  // 0 is "no plain-http listener". When it is set, that listener answers 301 and
+  // nothing else, so that typing the bare address in a browser lands on the page,
+  // over https, without the address bar having to carry a port number.
+  registerHttpPort: 0,
+  registerUrl: '',
   registerSecret: '',
+  // An open page mints tokens for whoever finds it: no access code, and the
+  // challenge and the per-address limits are all that is left. Off by default.
+  registerOpen: false,
   registerPerHour: 3,
+  // The limit that actually matters for a public page: one token per address per
+  // day, so a stranger cannot fill the box with devices in an afternoon.
+  registerPerDay: 1,
   viewportWidth: 480,
   viewportHeight: 800,
   devicePixelRatio: 2,
@@ -120,10 +131,14 @@ export function loadConfig(env = process.env) {
     // 0 means "let the operating system choose", which is only useful to a test
     // that starts the page on an ephemeral port and reads the url back.
     registerPort: intFrom(env, 'BFWP_REGISTER_PORT', DEFAULTS.registerPort, { min: 0, max: 65535 }),
+    registerHttpPort: intFrom(env, 'BFWP_REGISTER_HTTP_PORT', DEFAULTS.registerHttpPort, { min: 0, max: 65535 }),
+    registerUrl: stringFrom(env, 'BFWP_REGISTER_URL', DEFAULTS.registerUrl),
     registerSecret: stringFrom(env, 'BFWP_REGISTER_SECRET', DEFAULTS.registerSecret),
+    registerOpen: boolFrom(env, 'BFWP_REGISTER_OPEN', DEFAULTS.registerOpen),
     // 0 turns the rate limit off, for a deployment that would rather accept any
     // number of registrations than ever refuse a legitimate one.
     registerPerHour: intFrom(env, 'BFWP_REGISTER_PER_HOUR', DEFAULTS.registerPerHour, { min: 0, max: 100 }),
+    registerPerDay: intFrom(env, 'BFWP_REGISTER_PER_DAY', DEFAULTS.registerPerDay, { min: 0, max: 100 }),
     viewportWidth: intFrom(env, 'BFWP_VIEWPORT_WIDTH', DEFAULTS.viewportWidth, { min: 160, max: 4096 }),
     viewportHeight: intFrom(env, 'BFWP_VIEWPORT_HEIGHT', DEFAULTS.viewportHeight, { min: 160, max: 4096 }),
     devicePixelRatio: intFrom(env, 'BFWP_DEVICE_PIXEL_RATIO', DEFAULTS.devicePixelRatio, { min: 1, max: 4 }),
@@ -138,29 +153,74 @@ export function loadConfig(env = process.env) {
     throw new ConfigError(`BFWP_LOG_LEVEL must be debug, info, warn, error or silent, got ${config.logLevel}`);
   }
 
-  // Two refusals, and both are the point of the feature rather than a formality.
-  //
-  // The port must not collide with the two listeners that already exist, because
-  // the failure would be `EADDRINUSE` at startup with a message that names a port
-  // nobody typed.
+  // Ports, first, because the failure would otherwise be `EADDRINUSE` at startup
+  // with a message that names a port nobody typed.
   if (config.registerPort === config.port || config.registerPort === config.port + 1) {
     throw new ConfigError(`BFWP_REGISTER_PORT must differ from BFWP_PORT (${config.port})`
       + ` and from the audio port (${config.port + 1}), got ${config.registerPort}`);
   }
+  if (config.registerHttpPort !== 0
+      && [config.port, config.port + 1, config.registerPort].includes(config.registerHttpPort)) {
+    throw new ConfigError(`BFWP_REGISTER_HTTP_PORT must differ from BFWP_PORT (${config.port}),`
+      + ` from the audio port (${config.port + 1}) and from BFWP_REGISTER_PORT`
+      + ` (${config.registerPort}), got ${config.registerHttpPort}`);
+  }
 
-  // AND THE ONE THAT MATTERS. This page mints credentials: anybody who can reach
-  // it and pass a challenge can hold a token for a channel that carries every page
-  // they read. So the default is that only this machine can reach it, and a
-  // deployment that publishes it has to say so twice -- a non-loopback address AND
-  // a secret long enough to not be guessed. `BFWP_REGISTER_HOST=0.0.0.0` on its own
-  // is refused rather than honoured, because honouring it is how a token dispenser
-  // ends up on the open internet with nobody having decided that it should.
+  // The plain-http listener has exactly one job, so it needs exactly one thing:
+  // somewhere to send people. Checked here rather than at the first request,
+  // because a redirect listener with no target is a listener that answers 500 to
+  // the one request it will ever get.
+  if (config.registerHttpPort !== 0) {
+    if (config.registerUrl.length === 0) {
+      throw new ConfigError('BFWP_REGISTER_HTTP_PORT is set, so the plain-http listener has'
+        + ' nowhere to send anyone: set BFWP_REGISTER_URL to the https address of the page,'
+        + ' for example https://render.example/');
+    }
+    let target;
+    try {
+      target = new URL(config.registerUrl);
+    } catch {
+      throw new ConfigError(`BFWP_REGISTER_URL is not a URL: ${JSON.stringify(config.registerUrl)}`);
+    }
+    if (target.protocol !== 'https:' && !allowInsecure) {
+      throw new ConfigError('BFWP_REGISTER_URL must be https://: the whole point of the'
+        + ' plain-http listener is to send people to the encrypted page, and a redirect to'
+        + ' another http url would leave the token on the wire.');
+    }
+    config.registerUrl = target.origin + (target.pathname === '' ? '/' : target.pathname);
+  }
+
+  // AND THE REFUSALS THAT MATTER, because this page mints credentials: anybody who
+  // can reach it and pass a challenge holds a token for a channel that carries
+  // every page they read. Three combinations are contradictory, and each one is
+  // refused rather than quietly resolved.
   config.registerIsLoopback = LOOPBACK_HOSTS.has(config.registerHost);
-  if (!config.registerIsLoopback && config.registerSecret.length < 16) {
+
+  // A page nobody can reach, with no access code: the only thing it would protect
+  // is nothing.
+  if (config.registerOpen && config.registerIsLoopback) {
+    throw new ConfigError('BFWP_REGISTER_OPEN says the page takes no access code, but'
+      + ` BFWP_REGISTER_HOST (${config.registerHost}) is a loopback address, so there is`
+      + ' nobody to open it to. Set BFWP_REGISTER_BIND_IP/BFWP_REGISTER_HOST to the address'
+      + ' people use, or leave BFWP_REGISTER_OPEN unset.');
+  }
+
+  // Two answers to the same question: one says the page asks for a code, the other
+  // says it does not. Honouring either would leave the operator believing the other.
+  if (config.registerOpen && config.registerSecret.length > 0) {
+    throw new ConfigError('BFWP_REGISTER_OPEN says the page takes no access code and'
+      + ' BFWP_REGISTER_SECRET sets one. Set one or the other.');
+  }
+
+  // The default path: published without a code, but NOT opened, so the code is
+  // required and long enough not to be guessed. `BFWP_REGISTER_HOST=0.0.0.0` on its
+  // own is refused rather than honoured, because honouring it is how a token
+  // dispenser ends up on the open internet with nobody having decided that it should.
+  if (!config.registerIsLoopback && !config.registerOpen && config.registerSecret.length < 16) {
     throw new ConfigError('BFWP_REGISTER_HOST is not a loopback address, so the registration'
       + ' page would be reachable from the network: set BFWP_REGISTER_SECRET (at least 16'
-      + ' characters), or leave BFWP_REGISTER_HOST at 127.0.0.1 and reach the page through'
-      + ' an SSH tunnel. A page that mints credentials must not be open to whoever finds it.');
+      + ' characters), set BFWP_REGISTER_OPEN=1 to mint tokens for whoever finds the page,'
+      + ' or leave BFWP_REGISTER_HOST at 127.0.0.1 and reach the page through an SSH tunnel.');
   }
 
   return Object.freeze(config);
