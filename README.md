@@ -79,17 +79,24 @@ export BFWP_PUBLIC_URL=https://render.example.com:8443
 docker compose up -d --build
 
 # 3. Register the phone and copy the token it prints. It is shown ONCE.
-docker compose exec render node bin/bfwp-device.js add "my phone"
+#    The wrapper, not `node bin/bfwp-device.js`: the image starts as root, and a
+#    registry written as root is one the server (as pwuser) cannot then read.
+docker compose exec render bin/bfwp-device.sh add "my phone"
 
-# 4. On the phone: Settings → Rendering engine → this server, and paste the
-#    url and the token.
+# 4. On the phone: Settings → Server, with this server's url in *Server address*
+#    and the token in *Device token*, then Settings → Rendering engine → Server
+#    (Chromium remotely). Both are on one screen, in that order.
 ```
 
 The client ships pointing at the project's own hosted server, so the address
 field already has something in it: **replace it with yours** in step 4 (or leave
-it, if you are the one running the hosted one). Until a token is pasted, the
-phone draws pages with its own engine and says why, so a self-hosted server that
-is not registered yet costs nothing but a missing picture.
+it, if you are the one running the hosted one). The client does not fall back to
+its own engine once the server engine is the one chosen, so until the token is
+pasted **nothing is drawn at all** -- not the page and not a device-rendered
+version of it -- and the phone says which of the two things is missing. Paste the
+token to fix that, or choose another engine in the picker to read pages on the
+phone. The full client-side sequence is in the client's README, *Configuring the
+hosted renderer*.
 
 Running it without Docker, for development:
 
