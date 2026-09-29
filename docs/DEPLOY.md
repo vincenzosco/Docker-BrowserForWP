@@ -352,7 +352,8 @@ HTML
 
 Chromium runs inside the container, so the address has to be one the CONTAINER can
 reach: the host's own address, not `127.0.0.1`. Without `--focus-url` the four
-FOCUS checks report SKIPPED, never passed.
+FOCUS checks report SKIPPED, never passed, and the run says so instead of counting
+them as failures.
 
 A run of a working deployment ends like this:
 
@@ -371,11 +372,13 @@ A run of a working deployment ends like this:
 10/10 checks passed.
 ```
 
-The tool's own first two versions reported a HEALTHY server as broken: once because
+The tool's own first three versions reported a HEALTHY server as broken: once because
 it acknowledged a frame and then treated the next one as unacknowledged, so the
 screencast stayed stopped and it waited for a picture it had already been sent; once
 because it took any frame as proof that the page it had asked for was in front, and
-then tapped the page it was leaving. Both mistakes are written into the file. A
+then tapped the page it was leaving; and once because a SKIPPED check was counted as a
+failed one, so a run without `--focus-url` -- every executed check green -- printed
+`0/4 checks passed` and the verdict below it. All three are written into the file. A
 verification tool that lies in the pessimistic direction wastes as much of an
 afternoon as one that lies in the optimistic one.
 

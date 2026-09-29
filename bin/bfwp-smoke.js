@@ -326,13 +326,24 @@ async function waitForPage(connection, url, { timeoutMs, from = 0 }) {
 }
 
 function finish() {
-  const failed = results.filter((result) => !result.ok);
+  // `skipped()` records a name and nothing else, so a skipped check has no `ok`
+  // and the first version of this line counted it as a FAILURE: the four FOCUS
+  // checks that need `--focus-url` turned a run whose every executed check passed
+  // into "0/4 checks passed" followed by the verdict sentence below. A run without
+  // --focus-url is not a broken deployment, and the sentence has to say which one
+  // it is. (DEPLOY.md quotes a full run ending at the count line, so the closing
+  // sentences are kept as they were when nothing was skipped.)
+  const failed = results.filter((result) => !result.skipped && !result.ok);
   const skippedCount = results.filter((result) => result.skipped).length;
   const ran = results.length - skippedCount;
   console.log(`\n${ran - failed.length}/${ran} checks passed${skippedCount ? `, ${skippedCount} skipped` : ''}.`);
   if (failed.length > 0) {
     console.log('This deployment is not doing what the protocol says it does.');
     return 1;
+  }
+  if (skippedCount > 0) {
+    console.log('The checks that ran passed; the skipped ones prove nothing. Give --focus-url to run them.');
+    return 0;
   }
   console.log('The server completed a session, drew a page, and answered where the focus is.');
   return 0;
