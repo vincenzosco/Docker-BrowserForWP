@@ -42,8 +42,14 @@ services:
       # uid 1000 -- a bind to 80 or 443 inside the container would need
       # CAP_NET_BIND_SERVICE, and this image asks for no capabilities at all.
       #
-      # Both are on the same bind address as the tunnel port above, which is what
-      # makes the whole thing reversible in one variable.
+      # All three are on the same bind address, which is what makes the whole
+      # thing reversible in one variable.
+      #
+      # The third is the page's own port, kept because a tunnel to it is how an
+      # operator looks at the page from their own machine without opening anything
+      # (see docs/DEPLOY.md), and because it is the address the tests and the
+      # smoke tool use.
+      - "${BFWP_REGISTER_BIND_IP:-127.0.0.1}:8445:8445"
       - "${BFWP_REGISTER_BIND_IP:-127.0.0.1}:80:8080"
       - "${BFWP_REGISTER_BIND_IP:-127.0.0.1}:443:8445"
     environment:
